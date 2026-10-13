@@ -95,9 +95,81 @@ button {
   padding: 10px 18px;
 }
 
+button.button-secondary {
+  background: #2a3a50;
+}
+
+button.button-danger {
+  background: #7e2d3a;
+}
+
+button.button-small {
+  padding: 7px 10px;
+  font-size: 0.875rem;
+}
+
+.form-actions,
+.target-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.target-actions {
+  min-width: 220px;
+}
+
+.password-form {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.password-form input {
+  min-width: 140px;
+  width: 100%;
+}
+
+.form-message-error {
+  color: var(--danger);
+}
+
+.muted {
+  color: var(--muted);
+  font-size: 0.875rem;
+}
+
+.status-auth {
+  color: #ffd166;
+  font-weight: 700;
+}
+
+.table-wrap {
+  overflow-x: auto;
+}
+
 table {
   width: 100%;
   border-collapse: collapse;
+}
+
+@media (max-width: 700px) {
+  .container {
+    padding: 20px 12px 40px;
+  }
+
+  .panel {
+    padding: 14px;
+  }
+
+  table {
+    min-width: 760px;
+  }
+
+  label {
+    min-width: min(100%, 220px);
+  }
 }
 
 th, td {

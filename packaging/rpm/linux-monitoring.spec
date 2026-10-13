@@ -1,6 +1,6 @@
 Name: linux-monitoring
 Version: 1.0.0
-Release: 3%{?dist}
+Release: 4%{?dist}
 Summary: Standalone Linux monitoring dashboard for remote VM service checks
 License: MIT
 URL: https://example.com/monitoring-linux
@@ -30,10 +30,14 @@ ln -s /opt/monitoring-linux/monitoring-linux %{buildroot}%{_bindir}/monitoring-l
 %{_bindir}/monitoring-linux
 %dir /opt/monitoring-linux
 /opt/monitoring-linux/monitoring-linux
+/opt/monitoring-linux/monitoring-linux-ssh-askpass
 /opt/monitoring-linux/web
 %config(noreplace) %{_sysconfdir}/monitoring-linux/monitoring.conf
 
 %changelog
+* Tue Oct 13 2026 - Release 4
+- Add named target management and optional in-memory SSH password prompts
+- Restrict the web dashboard to local access
 * Tue Oct 13 2026 - Release 3
 - Embed SQLite in the application; no SQLite runtime package is required
 - Build RPM in /opt/monitoring-linux/rpmbuild

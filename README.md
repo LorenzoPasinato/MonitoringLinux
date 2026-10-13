@@ -10,6 +10,8 @@ Install the RPM on a single Red Hat 9 / AlmaLinux machine, launch the binary fro
 
 - local web dashboard served on localhost
 - SSH-based checks against remote Linux VMs
+- named machines with editable connection details and removal
+- optional SSH password prompt after key authentication fails
 - monitoring of service names such as sshd, nginx, httpd, postgresql, etc.
 - persistent configuration in SQLite
 - no external web service required
@@ -32,7 +34,7 @@ http://localhost:8080/
 
 ## SSH access requirement
 
-The control machine must be able to SSH into the target Linux hosts. The most practical setup is an SSH key-based authentication.
+The control machine must have the OpenSSH client and be able to connect to the target Linux hosts. SSH key authentication is tried first; when it is rejected, the dashboard asks for that machine's password.
 
 Example:
 
@@ -73,7 +75,7 @@ The helper uses `/opt/monitoring-linux/rpmbuild` as its RPM build tree. On first
 2. Install it with:
 
 ```bash
-sudo dnf install -y ./linux-monitoring-1.0.0-3.el9.x86_64.rpm
+sudo dnf install -y ./linux-monitoring-1.0.0-4.el9.x86_64.rpm
 ```
 
 3. Ensure SSH access is configured to the remote Linux hosts, ideally with key-based authentication.
@@ -98,3 +100,5 @@ The RPM installs the application files in `/opt/monitoring-linux` and the comman
 ```
 
 and contains the local port and SSH settings. SQLite is compiled into the application binary, so the target machine does not need the SQLite runtime package or command-line tool. SQLite data is stored in `~/.local/share/monitoring-linux/monitoring.db` for the user who starts the application, so it can run without root privileges.
+
+The dashboard listens only on `127.0.0.1`. If SSH key authentication fails, enter that machine's SSH password in the dashboard. Passwords are kept in memory only and must be entered again after restarting the application; they are never written to SQLite.

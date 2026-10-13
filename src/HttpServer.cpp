@@ -1,6 +1,7 @@
 #include "HttpServer.h"
 
 #include <arpa/inet.h>
+#include <algorithm>
 #include <cerrno>
 #include <cstring>
 #include <netinet/in.h>
@@ -15,6 +16,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace {
@@ -75,6 +77,7 @@ std::string buildTargetsJson(const std::vector<RemoteTarget>& targets) {
     for (size_t i = 0; i < targets.size(); ++i) {
         const auto& t = targets[i];
         json << "{\"id\":" << t.id
+               << ",\"name\":\"" << jsonEscape(t.name) << "\""
              << ",\"ip\":\"" << jsonEscape(t.ip) << "\""
              << ",\"username\":\"" << jsonEscape(t.username) << "\""
              << ",\"port\":" << t.port
@@ -96,6 +99,7 @@ std::string buildChecksJson(const std::vector<ServiceCheckResult>& checks) {
         const auto& c = checks[i];
         json << "{\"id\":" << c.id
              << ",\"target_id\":" << c.targetId
+               << ",\"name\":\"" << jsonEscape(c.name) << "\""
              << ",\"ip\":\"" << jsonEscape(c.ip) << "\""
              << ",\"username\":\"" << jsonEscape(c.username) << "\""
              << ",\"service_name\":\"" << jsonEscape(c.serviceName) << "\""
@@ -173,7 +177,42 @@ std::string readBody(const std::string& request) {
     return request.substr(pos + marker.size());
 }
 
-void handleRequest(int clientFd, Database& db, const std::string& webRoot) {
+std::unordered_map<std::string, std::string> parseForm(const std::string& body) {
+    std::unordered_map<std::string, std::string> fields;
+    std::string token;
+    std::istringstream bodyStream(body);
+    while (std::getline(bodyStream, token, '&')) {
+        const auto eq = token.find('=');
+        if (eq != std::string::npos) {
+            fields[urlDecode(token.substr(0, eq))] = urlDecode(token.substr(eq + 1));
+        }
+    }
+    return fields;
+}
+
+bool parseTargetRoute(const std::string& path, int& targetId, std::string& resource) {
+    const std::string prefix = "/api/targets/";
+    if (path.rfind(prefix, 0) != 0) {
+        return false;
+    }
+
+    const std::string remainder = path.substr(prefix.size());
+    const auto slash = remainder.find('/');
+    const std::string idText = remainder.substr(0, slash);
+    try {
+        size_t parsed = 0;
+        targetId = std::stoi(idText, &parsed);
+        if (parsed != idText.size() || targetId <= 0) {
+            return false;
+        }
+    } catch (...) {
+        return false;
+    }
+    resource = slash == std::string::npos ? "" : remainder.substr(slash + 1);
+    return true;
+}
+
+void handleRequest(int clientFd, Database& db, SshCredentials& credentials, const std::string& webRoot) {
     char buffer[8192] = {};
     const ssize_t received = recv(clientFd, buffer, sizeof(buffer) - 1, 0);
     if (received <= 0) {
@@ -216,26 +255,36 @@ void handleRequest(int clientFd, Database& db, const std::string& webRoot) {
     }
 
     if (method == "POST" && path == "/api/targets") {
-        const std::string body = readBody(request);
-        std::string ip, username, services;
+        const auto fields = parseForm(readBody(request));
+        const std::string name = fields.count("name") ? fields.at("name") : "";
+        const std::string ip = fields.count("ip") ? fields.at("ip") : "";
+        const std::string username = fields.count("username") ? fields.at("username") : "root";
+        const std::string services = fields.count("services") ? fields.at("services") : "";
         int port = 22;
-
-        std::string token;
-        std::istringstream bodyStream(body);
-        while (std::getline(bodyStream, token, '&')) {
-            const auto eq = token.find('=');
-            if (eq == std::string::npos) {
-                continue;
-            }
-            std::string key = urlDecode(token.substr(0, eq));
-            std::string value = urlDecode(token.substr(eq + 1));
-            if (key == "ip") ip = value;
-            else if (key == "username") username = value;
-            else if (key == "port") port = std::stoi(value);
-            else if (key == "services") services = value;
+        try {
+            if (fields.count("port")) port = std::stoi(fields.at("port"));
+        } catch (...) {
+            port = 0;
         }
 
-        const bool ok = db.upsertTarget(ip, username.empty() ? "root" : username, port, services);
+        if (ip.empty() || name.size() > 80 || services.empty() || port < 1 || port > 65535) {
+            sendResponse(clientFd, "400 Bad Request", "application/json; charset=utf-8", "{\"status\":\"invalid_input\"}");
+            close(clientFd);
+            return;
+        }
+
+        const std::string effectiveUsername = username.empty() ? "root" : username;
+        int previousTargetId = 0;
+        bool connectionChanged = false;
+        for (const auto& target : db.listTargets()) {
+            if (target.ip == ip) {
+                previousTargetId = target.id;
+                connectionChanged = target.username != effectiveUsername || target.port != port;
+                break;
+            }
+        }
+        const bool ok = db.upsertTarget(name, ip, effectiveUsername, port, services);
+        if (ok && previousTargetId > 0 && connectionChanged) credentials.erase(previousTargetId);
         if (!ok) {
             sendResponse(clientFd, "500 Internal Server Error", "application/json; charset=utf-8", "{\"status\":\"error\"}");
             close(clientFd);
@@ -247,12 +296,56 @@ void handleRequest(int clientFd, Database& db, const std::string& webRoot) {
         return;
     }
 
-    if (method == "DELETE" && path.rfind("/api/targets/", 0) == 0) {
-        const std::string ip = urlDecode(path.substr(strlen("/api/targets/")));
-        const bool ok = db.deleteTarget(ip);
-        sendResponse(clientFd, ok ? "200 OK" : "404 Not Found", "application/json; charset=utf-8", ok ? "{\"status\":\"deleted\"}" : "{\"status\":\"not_found\"}");
-        close(clientFd);
-        return;
+    int targetId = 0;
+    std::string resource;
+    if (parseTargetRoute(path, targetId, resource)) {
+        if (method == "PUT" && resource.empty()) {
+            const auto fields = parseForm(readBody(request));
+            const std::string name = fields.count("name") ? fields.at("name") : "";
+            const std::string ip = fields.count("ip") ? fields.at("ip") : "";
+            const std::string username = fields.count("username") ? fields.at("username") : "root";
+            const std::string services = fields.count("services") ? fields.at("services") : "";
+            int port = 22;
+            try {
+                if (fields.count("port")) port = std::stoi(fields.at("port"));
+            } catch (...) {
+                port = 0;
+            }
+            const std::string effectiveUsername = username.empty() ? "root" : username;
+            const bool valid = name.size() <= 80 && !ip.empty() && !services.empty() && port >= 1 && port <= 65535;
+            bool connectionChanged = false;
+            for (const auto& target : db.listTargets()) {
+                if (target.id == targetId) {
+                    connectionChanged = target.ip != ip || target.username != effectiveUsername || target.port != port;
+                    break;
+                }
+            }
+            const bool ok = valid && db.updateTarget(targetId, name, ip, effectiveUsername, port, services);
+            if (ok && connectionChanged) credentials.erase(targetId);
+            sendResponse(clientFd, ok ? "200 OK" : (valid ? "404 Not Found" : "400 Bad Request"), "application/json; charset=utf-8", ok ? "{\"status\":\"updated\"}" : "{\"status\":\"error\"}");
+            close(clientFd);
+            return;
+        }
+
+        if (method == "POST" && resource == "password") {
+            const auto targets = db.listTargets();
+            const bool exists = std::any_of(targets.begin(), targets.end(), [targetId](const RemoteTarget& target) { return target.id == targetId; });
+            const auto fields = parseForm(readBody(request));
+            const auto password = fields.find("password");
+            const bool ok = exists && password != fields.end() && !password->second.empty();
+            if (ok) credentials.setPassword(targetId, password->second);
+            sendResponse(clientFd, ok ? "200 OK" : "400 Bad Request", "application/json; charset=utf-8", ok ? "{\"status\":\"password_set\"}" : "{\"status\":\"invalid_password\"}");
+            close(clientFd);
+            return;
+        }
+
+        if (method == "DELETE" && resource.empty()) {
+            const bool ok = db.deleteTarget(targetId);
+            if (ok) credentials.erase(targetId);
+            sendResponse(clientFd, ok ? "200 OK" : "404 Not Found", "application/json; charset=utf-8", ok ? "{\"status\":\"deleted\"}" : "{\"status\":\"not_found\"}");
+            close(clientFd);
+            return;
+        }
     }
 
     serveStaticFile(clientFd, webRoot, path);
@@ -260,8 +353,8 @@ void handleRequest(int clientFd, Database& db, const std::string& webRoot) {
 }
 }  // namespace
 
-HttpServer::HttpServer(Database& db, const std::string& host, int port, const std::string& webRoot)
-    : db_(db), host_(host), port_(port), webRoot_(webRoot) {
+HttpServer::HttpServer(Database& db, SshCredentials& credentials, const std::string& host, int port, const std::string& webRoot)
+    : db_(db), credentials_(credentials), host_(host), port_(port), webRoot_(webRoot) {
 }
 
 HttpServer::~HttpServer() {
@@ -321,7 +414,7 @@ void HttpServer::run() {
             break;
         }
 
-        handleRequest(clientFd, db_, webRoot_);
+        handleRequest(clientFd, db_, credentials_, webRoot_);
     }
 
     stop();

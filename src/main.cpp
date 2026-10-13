@@ -1,21 +1,29 @@
 #include "Database.h"
 #include "HttpServer.h"
+#include "SshCredentials.h"
 
 #include <atomic>
+#include <cerrno>
 #include <chrono>
+#include <cstring>
 #include <cstdlib>
 #include <ctime>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <sstream>
+#include <spawn.h>
 #include <string>
+#include <sys/wait.h>
 #include <thread>
+#include <unistd.h>
 #include <vector>
+
+extern "C" char** environ;
 
 namespace {
 struct Config {
-    std::string host = "0.0.0.0";
+    std::string host = "127.0.0.1";
     int port = 8080;
     std::string dbPath = "~/.local/share/monitoring-linux/monitoring.db";
     std::string webRoot = "/opt/monitoring-linux/web";
@@ -108,75 +116,149 @@ std::string nowIso() {
     return std::string(buffer);
 }
 
-bool runCommand(const std::string& command, std::string& output) {
-    FILE* pipe = popen(command.c_str(), "r");
-    if (!pipe) {
-        return false;
+std::string quoteRemoteArgument(const std::string& value) {
+    std::string quoted = "'";
+    for (char character : value) {
+        if (character == '\'') {
+            quoted += "'\\''";
+        } else {
+            quoted += character;
+        }
+    }
+    quoted += "'";
+    return quoted;
+}
+
+int runSsh(const RemoteTarget& target, const std::string& remoteCommand, const std::string& password, std::string& output) {
+    int outputPipe[2];
+    if (pipe(outputPipe) != 0) {
+        return -1;
+    }
+
+    std::vector<std::string> arguments = {
+        "ssh", "-o", password.empty() ? "BatchMode=yes" : "BatchMode=no",
+        "-o", "StrictHostKeyChecking=accept-new",
+        "-o", "ConnectTimeout=5",
+        "-o", "NumberOfPasswordPrompts=1"
+    };
+    if (!password.empty()) {
+        arguments.insert(arguments.end(), {"-o", "PreferredAuthentications=publickey,password,keyboard-interactive"});
+    }
+    arguments.insert(arguments.end(), {"-p", std::to_string(target.port), "-l", target.username, "--", target.ip, remoteCommand});
+
+    std::vector<char*> argumentPointers;
+    argumentPointers.reserve(arguments.size() + 1);
+    for (auto& argument : arguments) {
+        argumentPointers.push_back(argument.data());
+    }
+    argumentPointers.push_back(nullptr);
+
+    std::vector<std::string> environment;
+    for (char** current = environ; current && *current; ++current) {
+        const std::string variable(*current);
+        if (variable.rfind("LC_ALL=", 0) == 0 || variable.rfind("SSH_ASKPASS=", 0) == 0 ||
+            variable.rfind("SSH_ASKPASS_REQUIRE=", 0) == 0 || variable.rfind("DISPLAY=", 0) == 0 ||
+            variable.rfind("MONITORING_SSH_PASSWORD=", 0) == 0) {
+            continue;
+        }
+        environment.push_back(variable);
+    }
+    environment.emplace_back("LC_ALL=C");
+    if (!password.empty()) {
+        environment.emplace_back("SSH_ASKPASS=/opt/monitoring-linux/monitoring-linux-ssh-askpass");
+        environment.emplace_back("SSH_ASKPASS_REQUIRE=force");
+        environment.emplace_back("DISPLAY=monitoring-linux:0");
+        environment.emplace_back("MONITORING_SSH_PASSWORD=" + password);
+    }
+    std::vector<char*> environmentPointers;
+    environmentPointers.reserve(environment.size() + 1);
+    for (auto& variable : environment) {
+        environmentPointers.push_back(variable.data());
+    }
+    environmentPointers.push_back(nullptr);
+
+    posix_spawn_file_actions_t actions;
+    const int actionsInit = posix_spawn_file_actions_init(&actions);
+    if (actionsInit != 0) {
+        close(outputPipe[0]);
+        close(outputPipe[1]);
+        return -1;
+    }
+    const int actionsResult = posix_spawn_file_actions_adddup2(&actions, outputPipe[1], STDOUT_FILENO) ||
+                              posix_spawn_file_actions_adddup2(&actions, outputPipe[1], STDERR_FILENO) ||
+                              posix_spawn_file_actions_addclose(&actions, outputPipe[0]) ||
+                              posix_spawn_file_actions_addclose(&actions, outputPipe[1]);
+    if (actionsResult != 0) {
+        posix_spawn_file_actions_destroy(&actions);
+        close(outputPipe[0]);
+        close(outputPipe[1]);
+        return -1;
+    }
+
+    pid_t child = -1;
+    const int spawnResult = posix_spawnp(&child, "ssh", &actions, nullptr, argumentPointers.data(), environmentPointers.data());
+    posix_spawn_file_actions_destroy(&actions);
+    close(outputPipe[1]);
+    if (spawnResult != 0) {
+        close(outputPipe[0]);
+        return spawnResult == ENOENT ? 127 : -1;
     }
 
     char buffer[4096] = {};
-    std::string result;
-    while (fgets(buffer, sizeof(buffer), pipe) != nullptr) {
-        result += buffer;
+    ssize_t bytesRead = 0;
+    while ((bytesRead = read(outputPipe[0], buffer, sizeof(buffer))) > 0) {
+        output.append(buffer, static_cast<size_t>(bytesRead));
     }
+    close(outputPipe[0]);
 
-    const int exitCode = pclose(pipe);
-    output = result;
-    return exitCode == 0 || exitCode == 3;
+    int childStatus = 0;
+    while (waitpid(child, &childStatus, 0) < 0) {
+        if (errno != EINTR) {
+            return -1;
+        }
+    }
+    return WIFEXITED(childStatus) ? WEXITSTATUS(childStatus) : 255;
 }
 
-ServiceCheckResult probeRemoteService(const RemoteTarget& target, const std::string& serviceName) {
+ServiceCheckResult probeRemoteService(const RemoteTarget& target, const std::string& serviceName, const std::string& password) {
     ServiceCheckResult result;
+    result.name = target.name;
     result.ip = target.ip;
     result.username = target.username;
     result.serviceName = serviceName;
     result.checkedAt = nowIso();
     result.targetId = target.id;
 
-    const std::string sshOptions = "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5 -p " + std::to_string(target.port);
-    const std::string shellCommand = "ssh " + sshOptions + " " + target.username + "@" + target.ip + " \"systemctl is-active --quiet " + serviceName + "; echo __MONITORING_STATUS:$?\" 2>/dev/null";
-
+    const std::string remoteCommand = "systemctl is-active --quiet " + quoteRemoteArgument(serviceName) + "; check_status=$?; printf '\\n__MONITORING_STATUS:%s\\n' \"$check_status\"";
     std::string output;
-    FILE* pipe = popen(shellCommand.c_str(), "r");
-    if (!pipe) {
-        result.active = false;
-        result.statusText = "ssh command failed";
-        return result;
-    }
-
-    char buffer[4096] = {};
-    std::string stdOut;
-    while (fgets(buffer, sizeof(buffer), pipe) != nullptr) {
-        stdOut += buffer;
-    }
-    const int exitCode = pclose(pipe);
-    result.statusText = stdOut;
+    const int exitCode = runSsh(target, remoteCommand, password, output);
 
     const std::string marker = "__MONITORING_STATUS:";
-    const auto pos = stdOut.rfind(marker);
+    const auto pos = output.rfind(marker);
     if (pos != std::string::npos) {
-        const std::string statusCode = trim(stdOut.substr(pos + marker.size()));
+        const std::string statusCode = trim(output.substr(pos + marker.size()));
         result.active = statusCode == "0";
-        if (result.active) {
-            result.statusText = "active";
-        } else {
-            result.statusText = "inactive or not found";
-        }
+        result.statusText = result.active ? "active" : "inactive or not found";
     } else {
-        result.active = exitCode == 0;
-        result.statusText = exitCode == 0 ? "active" : "inactive or ssh unavailable";
+        result.active = false;
+        const bool denied = output.find("Permission denied") != std::string::npos || output.find("Authentication failed") != std::string::npos;
+        if (denied) {
+            result.statusText = password.empty() ? "password required" : "authentication failed";
+        } else {
+            result.statusText = exitCode == 127 ? "ssh command not found" : "ssh unavailable";
+        }
     }
 
     return result;
 }
 
-void monitorLoop(Database& db, const Config& config, std::atomic<bool>& running) {
+void monitorLoop(Database& db, SshCredentials& credentials, const Config& config, std::atomic<bool>& running) {
     while (running) {
         const auto targets = db.listTargets();
         for (const auto& target : targets) {
             auto serviceList = splitCsv(target.services);
             for (const auto& serviceName : serviceList) {
-                auto check = probeRemoteService(target, serviceName);
+                auto check = probeRemoteService(target, serviceName, credentials.passwordFor(target.id));
                 db.saveCheckResult(check);
             }
         }
@@ -190,6 +272,15 @@ void printUsage(const char* programName) {
 }  // namespace
 
 int main(int argc, char** argv) {
+    if (argc == 2 && std::string(argv[1]) == "--internal-ssh-askpass") {
+        const char* password = std::getenv("MONITORING_SSH_PASSWORD");
+        if (password == nullptr) {
+            return 1;
+        }
+        std::cout << password << std::endl;
+        return 0;
+    }
+
     std::string configPath = "/etc/monitoring-linux/monitoring.conf";
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
@@ -206,6 +297,10 @@ int main(int argc, char** argv) {
     }
 
     Config config = loadConfig(configPath);
+    if (config.host != "127.0.0.1") {
+        std::cerr << "Dashboard access is restricted to this machine; using 127.0.0.1." << std::endl;
+        config.host = "127.0.0.1";
+    }
     if (config.dbPath == "/var/lib/monitoring-linux/monitoring.db") {
         config.dbPath = "~/.local/share/monitoring-linux/monitoring.db";
     }
@@ -234,11 +329,12 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+    SshCredentials credentials;
     std::atomic<bool> running{true};
-    std::thread monitorThread(monitorLoop, std::ref(db), std::cref(config), std::ref(running));
+    std::thread monitorThread(monitorLoop, std::ref(db), std::ref(credentials), std::cref(config), std::ref(running));
 
     try {
-        HttpServer server(db, config.host, config.port, config.webRoot);
+        HttpServer server(db, credentials, config.host, config.port, config.webRoot);
         server.run();
     } catch (const std::exception& ex) {
         std::cerr << ex.what() << std::endl;

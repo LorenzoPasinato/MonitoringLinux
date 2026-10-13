@@ -25,6 +25,7 @@ target_include_directories(monitoring-linux PRIVATE
 target_link_libraries(monitoring-linux PRIVATE sqlite3)
 
 install(TARGETS monitoring-linux RUNTIME DESTINATION monitoring-linux)
+install(PROGRAMS packaging/ssh-askpass.sh DESTINATION monitoring-linux RENAME monitoring-linux-ssh-askpass)
 install(FILES config/monitoring.conf DESTINATION ${CMAKE_INSTALL_SYSCONFDIR}/monitoring-linux)
 install(DIRECTORY web/ DESTINATION monitoring-linux/web)
 

@@ -1,12 +1,13 @@
 #pragma once
 
 #include "Database.h"
+#include "SshCredentials.h"
 
 #include <string>
 
 class HttpServer {
 public:
-    HttpServer(Database& db, const std::string& host, int port, const std::string& webRoot);
+    HttpServer(Database& db, SshCredentials& credentials, const std::string& host, int port, const std::string& webRoot);
     ~HttpServer();
 
     void run();
@@ -14,6 +15,7 @@ public:
 
 private:
     Database& db_;
+    SshCredentials& credentials_;
     std::string host_;
     int port_ = 8080;
     std::string webRoot_;

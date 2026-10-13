@@ -5,6 +5,7 @@
 
 struct RemoteTarget {
     int id = 0;
+    std::string name;
     std::string ip;
     std::string username;
     int port = 22;
@@ -16,6 +17,7 @@ struct RemoteTarget {
 struct ServiceCheckResult {
     int id = 0;
     int targetId = 0;
+    std::string name;
     std::string ip;
     std::string username;
     std::string serviceName;
@@ -31,8 +33,9 @@ public:
 
     bool initialize();
     std::vector<RemoteTarget> listTargets() const;
-    bool upsertTarget(const std::string& ip, const std::string& username, int port, const std::string& services);
-    bool deleteTarget(const std::string& ip);
+    bool upsertTarget(const std::string& name, const std::string& ip, const std::string& username, int port, const std::string& services);
+    bool updateTarget(int id, const std::string& name, const std::string& ip, const std::string& username, int port, const std::string& services);
+    bool deleteTarget(int id);
     std::vector<ServiceCheckResult> getLatestChecks() const;
     bool saveCheckResult(const ServiceCheckResult& result);
 

@@ -14,9 +14,13 @@
       </header>
 
       <section class="panel">
-        <h2>Add target VM</h2>
-        <form id="target-form">
+        <h2 id="target-form-title">Add target VM</h2>
+        <form id="target-form" data-target-id="">
           <div class="row">
+            <label>
+              Machine name
+              <input type="text" id="name" maxlength="80" placeholder="Automatic: VM_1, VM_2, ..." />
+            </label>
             <label>
               IP address
               <input type="text" id="ip" placeholder="10.0.0.22" required />
@@ -36,28 +40,36 @@
               <input type="text" id="services" placeholder="sshd,nginx,httpd" required />
             </label>
           </div>
-          <button type="submit">Save target</button>
+          <div class="form-actions">
+            <button type="submit" id="save-target">Save target</button>
+            <button type="button" id="cancel-edit" class="button-secondary" hidden>Cancel</button>
+            <span id="target-message" role="status" aria-live="polite"></span>
+          </div>
         </form>
       </section>
 
       <section class="panel">
         <h2>Monitored hosts</h2>
+        <div class="table-wrap">
         <table>
           <thead>
             <tr>
-              <th>Host</th>
+              <th>Machine</th>
               <th>User</th>
               <th>Services</th>
               <th>Last status</th>
               <th>Last check</th>
+              <th>Actions</th>
             </tr>
           </thead>
           <tbody id="targets-body"></tbody>
         </table>
+        </div>
       </section>
 
       <section class="panel">
         <h2>Service status</h2>
+        <div class="table-wrap">
         <table>
           <thead>
             <tr>
@@ -69,6 +81,7 @@
           </thead>
           <tbody id="checks-body"></tbody>
         </table>
+        </div>
       </section>
     </div>
 
