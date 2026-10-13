@@ -1,6 +1,6 @@
 Name: linux-monitoring
 Version: 1.0.0
-Release: 8%{?dist}
+Release: 13%{?dist}
 Summary: Standalone Linux monitoring dashboard for remote VM service checks
 License: MIT
 URL: https://example.com/monitoring-linux
@@ -35,6 +35,18 @@ ln -s /opt/monitoring-linux/monitoring-linux %{buildroot}%{_bindir}/monitoring-l
 %config(noreplace) %{_sysconfdir}/monitoring-linux/monitoring.conf
 
 %changelog
+* Tue Oct 13 2026 - Release 13
+- Use a borderless trash icon for Delete and show SSH connection state per machine
+* Tue Oct 13 2026 - Release 12
+- Move Edit/Delete to compact VM title icons and label machine poweroff as Shutdown
+* Tue Oct 13 2026 - Release 11
+- Add per-service restart/stop and machine reboot/poweroff controls
+* Tue Oct 13 2026 - Release 10
+- Add confirmed service and machine restart/stop controls
+- Show SSH username, host and port under each machine name
+* Tue Oct 13 2026 - Release 9
+- Add interactive SSH terminals for monitored machines
+- Vendor xterm.js for a full terminal emulator in the dashboard
 * Tue Oct 13 2026 - Release 8
 - Update minimalist dashboard styling and layout
 * Tue Oct 13 2026 - Release 7

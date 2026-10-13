@@ -10,16 +10,30 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/time.h>
+#include <sys/ioctl.h>
+#include <sys/wait.h>
+#include <pty.h>
+#include <poll.h>
+#include <signal.h>
+#include <spawn.h>
 #include <unistd.h>
+#include <fcntl.h>
 
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <array>
+#include <chrono>
+#include <cstdint>
+#include <cstdlib>
+#include <cstdio>
 #include <sstream>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
 #include <vector>
+
+extern "C" char** environ;
 
 namespace {
 std::string urlDecode(const std::string& input) {
@@ -228,7 +242,419 @@ bool parseTargetRoute(const std::string& path, int& targetId, std::string& resou
     return true;
 }
 
-void handleRequest(int clientFd, Database& db, SshCredentials& credentials, MonitorSignal& monitorSignal, const std::string& webRoot) {
+std::string shellQuote(const std::string& value) {
+    std::string quoted = "'";
+    for (char character : value) {
+        if (character == '\'') quoted += "'\\''";
+        else quoted += character;
+    }
+    quoted += "'";
+    return quoted;
+}
+
+bool targetHasService(const RemoteTarget& target, const std::string& serviceName) {
+    if (serviceName.empty() || !std::isalnum(static_cast<unsigned char>(serviceName.front()))) return false;
+    for (unsigned char character : serviceName) {
+        if (!std::isalnum(character) && character != '_' && character != '-' && character != '.' && character != '@' && character != ':') return false;
+    }
+
+    std::istringstream services(target.services);
+    std::string service;
+    while (std::getline(services, service, ',')) {
+        const auto start = service.find_first_not_of(" \t");
+        const auto end = service.find_last_not_of(" \t");
+        if (start != std::string::npos && service.substr(start, end - start + 1) == serviceName) return true;
+    }
+    return false;
+}
+
+int runRemoteAction(const RemoteTarget& target, const std::string& command, const std::string& password, std::string& output) {
+    int outputPipe[2];
+    if (pipe(outputPipe) != 0) return -1;
+
+    std::vector<std::string> arguments = {
+        "ssh", "-o", password.empty() ? "BatchMode=yes" : "BatchMode=no",
+        "-o", "StrictHostKeyChecking=accept-new", "-o", "ConnectTimeout=8",
+        "-o", "NumberOfPasswordPrompts=1"
+    };
+    if (!password.empty()) arguments.insert(arguments.end(), {"-o", "PreferredAuthentications=publickey,password,keyboard-interactive"});
+    arguments.insert(arguments.end(), {"-p", std::to_string(target.port), "-l", target.username, "--", target.ip, command});
+
+    std::vector<char*> argumentPointers;
+    for (auto& argument : arguments) argumentPointers.push_back(argument.data());
+    argumentPointers.push_back(nullptr);
+
+    std::vector<std::string> environment;
+    for (char** current = environ; current && *current; ++current) {
+        const std::string variable(*current);
+        if (variable.rfind("SSH_ASKPASS=", 0) == 0 || variable.rfind("SSH_ASKPASS_REQUIRE=", 0) == 0 ||
+            variable.rfind("DISPLAY=", 0) == 0 || variable.rfind("MONITORING_SSH_PASSWORD=", 0) == 0) continue;
+        environment.push_back(variable);
+    }
+    if (!password.empty()) {
+        environment.emplace_back("SSH_ASKPASS=/opt/monitoring-linux/monitoring-linux-ssh-askpass");
+        environment.emplace_back("SSH_ASKPASS_REQUIRE=force");
+        environment.emplace_back("DISPLAY=monitoring-linux:0");
+        environment.emplace_back("MONITORING_SSH_PASSWORD=" + password);
+    }
+    std::vector<char*> environmentPointers;
+    for (auto& variable : environment) environmentPointers.push_back(variable.data());
+    environmentPointers.push_back(nullptr);
+
+    posix_spawn_file_actions_t actions;
+    if (posix_spawn_file_actions_init(&actions) != 0) {
+        close(outputPipe[0]);
+        close(outputPipe[1]);
+        return -1;
+    }
+    const int actionResult = posix_spawn_file_actions_adddup2(&actions, outputPipe[1], STDOUT_FILENO) ||
+                             posix_spawn_file_actions_adddup2(&actions, outputPipe[1], STDERR_FILENO) ||
+                             posix_spawn_file_actions_addclose(&actions, outputPipe[0]) ||
+                             posix_spawn_file_actions_addclose(&actions, outputPipe[1]) ||
+                             posix_spawn_file_actions_addopen(&actions, STDIN_FILENO, "/dev/null", O_RDONLY, 0);
+    if (actionResult != 0) {
+        posix_spawn_file_actions_destroy(&actions);
+        close(outputPipe[0]);
+        close(outputPipe[1]);
+        return -1;
+    }
+
+    pid_t child = -1;
+    const int spawnResult = posix_spawnp(&child, "ssh", &actions, nullptr, argumentPointers.data(), environmentPointers.data());
+    posix_spawn_file_actions_destroy(&actions);
+    close(outputPipe[1]);
+    if (spawnResult != 0) {
+        close(outputPipe[0]);
+        return -1;
+    }
+
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+    bool pipeOpen = true;
+    bool childExited = false;
+    int childStatus = 0;
+    while (pipeOpen || !childExited) {
+        if (std::chrono::steady_clock::now() >= deadline) {
+            kill(child, SIGTERM);
+            waitpid(child, &childStatus, 0);
+            close(outputPipe[0]);
+            return 124;
+        }
+
+        pollfd descriptor{outputPipe[0], static_cast<short>(pipeOpen ? POLLIN : 0), 0};
+        poll(&descriptor, 1, 100);
+        if (pipeOpen && descriptor.revents & (POLLIN | POLLHUP | POLLERR)) {
+            char buffer[4096];
+            const ssize_t count = read(outputPipe[0], buffer, sizeof(buffer));
+            if (count > 0) output.append(buffer, static_cast<size_t>(count));
+            else pipeOpen = false;
+        }
+        if (!childExited && waitpid(child, &childStatus, WNOHANG) == child) childExited = true;
+    }
+    close(outputPipe[0]);
+    return WIFEXITED(childStatus) ? WEXITSTATUS(childStatus) : 255;
+}
+
+std::string requestHeader(const std::string& request, const std::string& wantedName) {
+    const auto headerEnd = request.find("\r\n\r\n");
+    if (headerEnd == std::string::npos) return {};
+    const std::string wanted = [&] {
+        std::string name = wantedName;
+        std::transform(name.begin(), name.end(), name.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        return name;
+    }();
+    std::istringstream headers(request.substr(0, headerEnd));
+    std::string line;
+    std::getline(headers, line);
+    while (std::getline(headers, line)) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        const auto colon = line.find(':');
+        if (colon == std::string::npos) continue;
+        std::string name = line.substr(0, colon);
+        std::transform(name.begin(), name.end(), name.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        if (name == wanted) {
+            const auto valueStart = line.find_first_not_of(" \t", colon + 1);
+            return valueStart == std::string::npos ? std::string{} : line.substr(valueStart);
+        }
+    }
+    return {};
+}
+
+uint32_t rotateLeft(uint32_t value, unsigned shift) {
+    return (value << shift) | (value >> (32 - shift));
+}
+
+std::array<unsigned char, 20> sha1(const std::string& value) {
+    std::vector<unsigned char> bytes(value.begin(), value.end());
+    const uint64_t bitLength = static_cast<uint64_t>(bytes.size()) * 8;
+    bytes.push_back(0x80);
+    while ((bytes.size() % 64) != 56) bytes.push_back(0);
+    for (int shift = 56; shift >= 0; shift -= 8) bytes.push_back(static_cast<unsigned char>(bitLength >> shift));
+
+    uint32_t h0 = 0x67452301;
+    uint32_t h1 = 0xEFCDAB89;
+    uint32_t h2 = 0x98BADCFE;
+    uint32_t h3 = 0x10325476;
+    uint32_t h4 = 0xC3D2E1F0;
+    for (size_t block = 0; block < bytes.size(); block += 64) {
+        uint32_t words[80]{};
+        for (size_t i = 0; i < 16; ++i) {
+            const size_t offset = block + i * 4;
+            words[i] = (static_cast<uint32_t>(bytes[offset]) << 24) |
+                       (static_cast<uint32_t>(bytes[offset + 1]) << 16) |
+                       (static_cast<uint32_t>(bytes[offset + 2]) << 8) |
+                       static_cast<uint32_t>(bytes[offset + 3]);
+        }
+        for (size_t i = 16; i < 80; ++i) words[i] = rotateLeft(words[i - 3] ^ words[i - 8] ^ words[i - 14] ^ words[i - 16], 1);
+        uint32_t a = h0, b = h1, c = h2, d = h3, e = h4;
+        for (size_t i = 0; i < 80; ++i) {
+            uint32_t f = 0, k = 0;
+            if (i < 20) { f = (b & c) | (~b & d); k = 0x5A827999; }
+            else if (i < 40) { f = b ^ c ^ d; k = 0x6ED9EBA1; }
+            else if (i < 60) { f = (b & c) | (b & d) | (c & d); k = 0x8F1BBCDC; }
+            else { f = b ^ c ^ d; k = 0xCA62C1D6; }
+            const uint32_t temp = rotateLeft(a, 5) + f + e + k + words[i];
+            e = d; d = c; c = rotateLeft(b, 30); b = a; a = temp;
+        }
+        h0 += a; h1 += b; h2 += c; h3 += d; h4 += e;
+    }
+
+    std::array<unsigned char, 20> digest{};
+    const uint32_t hashWords[] = {h0, h1, h2, h3, h4};
+    for (size_t i = 0; i < 5; ++i) {
+        digest[i * 4] = static_cast<unsigned char>(hashWords[i] >> 24);
+        digest[i * 4 + 1] = static_cast<unsigned char>(hashWords[i] >> 16);
+        digest[i * 4 + 2] = static_cast<unsigned char>(hashWords[i] >> 8);
+        digest[i * 4 + 3] = static_cast<unsigned char>(hashWords[i]);
+    }
+    return digest;
+}
+
+std::string base64(const unsigned char* data, size_t size) {
+    static constexpr char alphabet[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    std::string result;
+    result.reserve(((size + 2) / 3) * 4);
+    for (size_t i = 0; i < size; i += 3) {
+        const uint32_t value = (static_cast<uint32_t>(data[i]) << 16) |
+                               (i + 1 < size ? static_cast<uint32_t>(data[i + 1]) << 8 : 0) |
+                               (i + 2 < size ? static_cast<uint32_t>(data[i + 2]) : 0);
+        result.push_back(alphabet[(value >> 18) & 0x3f]);
+        result.push_back(alphabet[(value >> 12) & 0x3f]);
+        result.push_back(i + 1 < size ? alphabet[(value >> 6) & 0x3f] : '=');
+        result.push_back(i + 2 < size ? alphabet[value & 0x3f] : '=');
+    }
+    return result;
+}
+
+bool sendSocketData(int fd, const unsigned char* data, size_t size) {
+    size_t sent = 0;
+    while (sent < size) {
+        const ssize_t result = send(fd, data + sent, size - sent, MSG_NOSIGNAL);
+        if (result < 0 && errno == EINTR) continue;
+        if (result <= 0) return false;
+        sent += static_cast<size_t>(result);
+    }
+    return true;
+}
+
+bool sendWebSocketFrame(int fd, unsigned char opcode, const unsigned char* payload, size_t size) {
+    std::vector<unsigned char> frame;
+    frame.reserve(size + 10);
+    frame.push_back(static_cast<unsigned char>(0x80 | opcode));
+    if (size <= 125) {
+        frame.push_back(static_cast<unsigned char>(size));
+    } else if (size <= 65535) {
+        frame.push_back(126);
+        frame.push_back(static_cast<unsigned char>(size >> 8));
+        frame.push_back(static_cast<unsigned char>(size));
+    } else {
+        frame.push_back(127);
+        for (int shift = 56; shift >= 0; shift -= 8) frame.push_back(static_cast<unsigned char>(static_cast<uint64_t>(size) >> shift));
+    }
+    if (size > 0) frame.insert(frame.end(), payload, payload + size);
+    return sendSocketData(fd, frame.data(), frame.size());
+}
+
+bool readSocketBytes(int fd, unsigned char* data, size_t size) {
+    size_t received = 0;
+    while (received < size) {
+        const ssize_t result = recv(fd, data + received, size - received, 0);
+        if (result < 0 && errno == EINTR) continue;
+        if (result <= 0) return false;
+        received += static_cast<size_t>(result);
+    }
+    return true;
+}
+
+void runTerminalSocket(int clientFd, const std::string& request, const RemoteTarget& target, const std::string& password, const std::atomic<bool>& serverRunning) {
+    const std::string clientKey = requestHeader(request, "Sec-WebSocket-Key");
+    const std::string host = requestHeader(request, "Host");
+    const std::string origin = requestHeader(request, "Origin");
+    std::string upgrade = requestHeader(request, "Upgrade");
+    std::string connection = requestHeader(request, "Connection");
+    std::transform(upgrade.begin(), upgrade.end(), upgrade.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    std::transform(connection.begin(), connection.end(), connection.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    const bool localHost = host.rfind("localhost:", 0) == 0 || host.rfind("127.0.0.1:", 0) == 0;
+    const bool localOrigin = origin.empty() || origin == "http://" + host;
+    if (upgrade != "websocket" || connection.find("upgrade") == std::string::npos ||
+        requestHeader(request, "Sec-WebSocket-Version") != "13" || clientKey.empty() || !localHost || !localOrigin) {
+        sendResponse(clientFd, "400 Bad Request", "text/plain; charset=utf-8", "WebSocket upgrade required");
+        close(clientFd);
+        return;
+    }
+
+    winsize terminalSize{};
+    terminalSize.ws_col = 100;
+    terminalSize.ws_row = 30;
+
+    std::vector<std::string> arguments = {
+        "ssh", "-tt", "-o", "BatchMode=no",
+        "-o", "StrictHostKeyChecking=accept-new", "-o", "ConnectTimeout=8", "-o", "NumberOfPasswordPrompts=1"
+    };
+    if (!password.empty()) arguments.insert(arguments.end(), {"-o", "PreferredAuthentications=publickey,password,keyboard-interactive"});
+    arguments.insert(arguments.end(), {"-p", std::to_string(target.port), "-l", target.username, "--", target.ip});
+    std::vector<char*> argumentPointers;
+    for (auto& argument : arguments) argumentPointers.push_back(argument.data());
+    argumentPointers.push_back(nullptr);
+
+    std::vector<std::string> environment;
+    for (char** current = environ; current && *current; ++current) {
+        const std::string variable(*current);
+        if (variable.rfind("SSH_ASKPASS=", 0) == 0 || variable.rfind("SSH_ASKPASS_REQUIRE=", 0) == 0 ||
+            variable.rfind("DISPLAY=", 0) == 0 || variable.rfind("MONITORING_SSH_PASSWORD=", 0) == 0 ||
+            variable.rfind("TERM=", 0) == 0) continue;
+        environment.push_back(variable);
+    }
+    environment.emplace_back("TERM=xterm-256color");
+    if (!password.empty()) {
+        environment.emplace_back("SSH_ASKPASS=/opt/monitoring-linux/monitoring-linux-ssh-askpass");
+        environment.emplace_back("SSH_ASKPASS_REQUIRE=force");
+        environment.emplace_back("DISPLAY=monitoring-linux:0");
+        environment.emplace_back("MONITORING_SSH_PASSWORD=" + password);
+    }
+    std::vector<char*> environmentPointers;
+    for (auto& variable : environment) environmentPointers.push_back(variable.data());
+    environmentPointers.push_back(nullptr);
+
+    int terminalFd = -1;
+    const pid_t child = forkpty(&terminalFd, nullptr, nullptr, &terminalSize);
+    if (child == 0) {
+        close(clientFd);
+        execve("/usr/bin/ssh", argumentPointers.data(), environmentPointers.data());
+        _exit(127);
+    }
+    if (child < 0) {
+        sendResponse(clientFd, "500 Internal Server Error", "text/plain; charset=utf-8", "Unable to create SSH terminal");
+        close(clientFd);
+        return;
+    }
+
+    const auto digest = sha1(clientKey + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11");
+    const std::string handshake = "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: " + base64(digest.data(), digest.size()) + "\r\n\r\n";
+    if (!sendSocketData(clientFd, reinterpret_cast<const unsigned char*>(handshake.data()), handshake.size())) {
+        kill(child, SIGHUP);
+        close(terminalFd);
+        close(clientFd);
+        waitpid(child, nullptr, 0);
+        return;
+    }
+
+    bool connected = true;
+    bool childExited = false;
+    std::vector<unsigned char> pending;
+    while (connected && serverRunning.load()) {
+        pollfd descriptors[2] = {{clientFd, POLLIN, 0}, {terminalFd, POLLIN, 0}};
+        const int ready = poll(descriptors, 2, 500);
+        if (ready < 0) {
+            if (errno == EINTR) continue;
+            break;
+        }
+
+        if (descriptors[1].revents & (POLLIN | POLLHUP | POLLERR)) {
+            unsigned char buffer[8192];
+            const ssize_t count = read(terminalFd, buffer, sizeof(buffer));
+            if (count > 0) connected = sendWebSocketFrame(clientFd, 1, buffer, static_cast<size_t>(count));
+            else connected = false;
+        }
+
+        if (connected && (descriptors[0].revents & (POLLIN | POLLHUP | POLLERR))) {
+            unsigned char buffer[8192];
+            const ssize_t count = recv(clientFd, buffer, sizeof(buffer), 0);
+            if (count < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)) {
+                continue;
+            }
+            if (count <= 0) {
+                connected = false;
+            } else {
+                pending.insert(pending.end(), buffer, buffer + count);
+                size_t consumed = 0;
+                while (pending.size() - consumed >= 2) {
+                    const unsigned char first = pending[consumed];
+                    const unsigned char second = pending[consumed + 1];
+                    const unsigned char opcode = first & 0x0f;
+                    const bool masked = (second & 0x80) != 0;
+                    uint64_t payloadSize = second & 0x7f;
+                    size_t headerSize = 2;
+                    if (payloadSize == 126) {
+                        if (pending.size() - consumed < 4) break;
+                        payloadSize = (static_cast<uint64_t>(pending[consumed + 2]) << 8) | pending[consumed + 3];
+                        headerSize = 4;
+                    } else if (payloadSize == 127) {
+                        if (pending.size() - consumed < 10) break;
+                        payloadSize = 0;
+                        for (size_t i = 0; i < 8; ++i) payloadSize = (payloadSize << 8) | pending[consumed + 2 + i];
+                        headerSize = 10;
+                    }
+                    if (!masked || payloadSize > 65536) { connected = false; break; }
+                    if (pending.size() - consumed < headerSize + 4 + payloadSize) break;
+                    const unsigned char* mask = pending.data() + consumed + headerSize;
+                    std::string payload(static_cast<size_t>(payloadSize), '\0');
+                    for (size_t i = 0; i < payload.size(); ++i) payload[i] = static_cast<char>(pending[consumed + headerSize + 4 + i] ^ mask[i % 4]);
+                    if (opcode == 8) {
+                        sendWebSocketFrame(clientFd, 8, nullptr, 0);
+                        connected = false;
+                    } else if (opcode == 9) {
+                        connected = sendWebSocketFrame(clientFd, 10, reinterpret_cast<const unsigned char*>(payload.data()), payload.size());
+                    } else if (opcode == 1) {
+                        int columns = 0, rows = 0;
+                        if (std::sscanf(payload.c_str(), "{\"type\":\"resize\",\"cols\":%d,\"rows\":%d}", &columns, &rows) == 2) {
+                            terminalSize.ws_col = static_cast<unsigned short>(std::clamp(columns, 20, 300));
+                            terminalSize.ws_row = static_cast<unsigned short>(std::clamp(rows, 5, 120));
+                            ioctl(terminalFd, TIOCSWINSZ, &terminalSize);
+                            kill(child, SIGWINCH);
+                        } else if (!payload.empty()) {
+                            size_t written = 0;
+                            while (written < payload.size()) {
+                                const ssize_t result = write(terminalFd, payload.data() + written, payload.size() - written);
+                                if (result < 0 && errno == EINTR) continue;
+                                if (result <= 0) { connected = false; break; }
+                                written += static_cast<size_t>(result);
+                            }
+                        }
+                    }
+                    consumed += headerSize + 4 + static_cast<size_t>(payloadSize);
+                    if (!connected) break;
+                }
+                if (consumed > 0) pending.erase(pending.begin(), pending.begin() + static_cast<std::ptrdiff_t>(consumed));
+            }
+        }
+
+        int childStatus = 0;
+        if (waitpid(child, &childStatus, WNOHANG) == child) {
+            childExited = true;
+            connected = false;
+        }
+    }
+
+    if (!childExited) kill(child, SIGHUP);
+    close(terminalFd);
+    close(clientFd);
+    int childStatus = 0;
+    if (!childExited) {
+        while (waitpid(child, &childStatus, 0) < 0 && errno == EINTR) {}
+    }
+}
+
+void handleRequest(int clientFd, Database& db, SshCredentials& credentials, MonitorSignal& monitorSignal, const std::string& webRoot, const std::atomic<bool>& serverRunning) {
     constexpr size_t maxRequestSize = 65536;
     std::string request;
     request.reserve(4096);
@@ -373,6 +799,65 @@ void handleRequest(int clientFd, Database& db, SshCredentials& credentials, Moni
     int targetId = 0;
     std::string resource;
     if (parseTargetRoute(path, targetId, resource)) {
+        if (method == "GET" && resource == "terminal") {
+            const auto targets = db.listTargets();
+            const auto found = std::find_if(targets.begin(), targets.end(), [targetId](const RemoteTarget& target) { return target.id == targetId; });
+            if (found == targets.end()) {
+                sendResponse(clientFd, "404 Not Found", "text/plain; charset=utf-8", "Machine not found");
+                close(clientFd);
+                return;
+            }
+            const RemoteTarget target = *found;
+            const std::string password = credentials.passwordFor(targetId);
+            runTerminalSocket(clientFd, request, target, password, serverRunning);
+            return;
+        }
+
+        if (method == "POST" && resource == "actions") {
+            const auto fields = parseForm(readBody(request));
+            const std::string action = fields.count("action") ? fields.at("action") : "";
+            const std::string service = fields.count("service") ? fields.at("service") : "";
+            const auto targets = db.listTargets();
+            const auto found = std::find_if(targets.begin(), targets.end(), [targetId](const RemoteTarget& target) { return target.id == targetId; });
+            if (found == targets.end()) {
+                sendResponse(clientFd, "404 Not Found", "application/json; charset=utf-8", "{\"status\":\"machine_not_found\"}");
+                close(clientFd);
+                return;
+            }
+
+            std::string remoteCommand;
+            if (action == "restart-service" || action == "stop-service") {
+                if (!targetHasService(*found, service)) {
+                    sendResponse(clientFd, "400 Bad Request", "application/json; charset=utf-8", "{\"status\":\"service_not_configured\"}");
+                    close(clientFd);
+                    return;
+                }
+                const std::string operation = action == "restart-service" ? "restart" : "stop";
+                remoteCommand = "systemctl " + operation + " " + shellQuote(service);
+            } else if (action == "reboot") {
+                remoteCommand = "systemctl reboot --no-block";
+            } else if (action == "poweroff") {
+                remoteCommand = "systemctl poweroff --no-block";
+            } else {
+                sendResponse(clientFd, "400 Bad Request", "application/json; charset=utf-8", "{\"status\":\"invalid_action\"}");
+                close(clientFd);
+                return;
+            }
+
+            const RemoteTarget target = *found;
+            const std::string password = credentials.passwordFor(targetId);
+            std::string output;
+            const int exitCode = runRemoteAction(target, remoteCommand, password, output);
+            const bool ok = exitCode == 0;
+            if (ok && (action == "restart-service" || action == "stop-service")) monitorSignal.notify();
+            std::ostringstream response;
+            response << "{\"status\":\"" << (ok ? "completed" : (exitCode == 124 ? "timeout" : "failed"))
+                     << "\",\"exit_code\":" << exitCode << ",\"output\":\"" << jsonEscape(output) << "\"}";
+            sendResponse(clientFd, ok ? "200 OK" : "502 Bad Gateway", "application/json; charset=utf-8", response.str());
+            close(clientFd);
+            return;
+        }
+
         if (method == "PUT" && resource.empty()) {
             const auto fields = parseForm(readBody(request));
             const std::string name = fields.count("name") ? fields.at("name") : "";
@@ -479,7 +964,7 @@ void HttpServer::workerLoop() {
             clientFd = pendingClients_.front();
             pendingClients_.pop_front();
         }
-        handleRequest(clientFd, db_, credentials_, monitorSignal_, webRoot_);
+        handleRequest(clientFd, db_, credentials_, monitorSignal_, webRoot_, running_);
     }
 }
 

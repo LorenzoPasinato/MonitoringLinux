@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>MonitoringLinux</title>
     <link rel="stylesheet" href="/css/style.css" />
+    <link rel="stylesheet" href="/vendor/xterm.css" />
   </head>
   <body>
     <div class="container">
@@ -22,22 +23,22 @@
               <input type="text" id="name" maxlength="80" placeholder="Automatic: VM_1, VM_2, ..." />
             </label>
             <label>
-              SSH user
-              <input type="text" id="username" value="root" required />
-            </label>
-            <label>
-              SSH password
-              <input type="password" id="password" autocomplete="new-password" placeholder="Optional; kept only while the app runs" />
-            </label>
-          </div>
-          <div class="row">
-            <label>
               IP address
               <input type="text" id="ip" placeholder="10.0.0.22" required />
             </label>
             <label>
               SSH port
               <input type="number" id="port" value="22" min="1" max="65535" />
+            </label>
+          </div>
+          <div class="row">
+            <label>
+              SSH user
+              <input type="text" id="username" value="root" required />
+            </label>
+            <label>
+              SSH password
+              <input type="password" id="password" autocomplete="new-password" placeholder="Optional; kept only while the app runs" />
             </label>
           </div>
           <div class="row">
@@ -69,6 +70,28 @@
       </div>
     </dialog>
 
+    <dialog id="terminal-dialog" aria-labelledby="terminal-title">
+      <header class="terminal-header">
+        <div>
+          <h2 id="terminal-title">Remote terminal</h2>
+          <p id="terminal-host"></p>
+        </div>
+        <button type="button" id="close-terminal" class="button-secondary" aria-label="Close terminal">Close</button>
+      </header>
+      <div id="terminal-screen" aria-label="Interactive SSH terminal"></div>
+      <p id="terminal-message" role="status" aria-live="polite"></p>
+    </dialog>
+    <dialog id="remote-action-dialog" aria-labelledby="remote-action-title" aria-describedby="remote-action-message">
+      <h2 id="remote-action-title">Confirm remote action</h2>
+      <p id="remote-action-message"></p>
+      <div class="dialog-actions">
+        <button type="button" id="cancel-remote-action" class="button-secondary">Cancel</button>
+        <button type="button" id="confirm-remote-action" class="button-danger">Confirm</button>
+      </div>
+    </dialog>
+
+    <script src="/vendor/xterm.js"></script>
+    <script src="/vendor/xterm-addon-fit.js"></script>
     <script src="/js/app.js"></script>
   </body>
 </html>

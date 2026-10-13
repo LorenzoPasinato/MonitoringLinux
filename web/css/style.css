@@ -51,13 +51,8 @@ header h1 {
   font-weight: 600;
 }
 
-header h1::before {
-  content: "> ";
-  color: var(--muted);
-}
-
 header p {
-  margin: 4px 0 0 2ch;
+  margin: 4px 0 0;
   color: var(--muted);
   font-size: 0.85rem;
 }
@@ -74,11 +69,6 @@ h2 {
   color: var(--text);
   font-size: 0.95rem;
   font-weight: 600;
-}
-
-h2::before {
-  content: "// ";
-  color: var(--green-dim);
 }
 
 .row {
@@ -253,6 +243,76 @@ button.button-small {
   font-weight: 600;
 }
 
+.machine-title-row,
+.machine-title-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.machine-title-actions {
+  gap: 4px;
+}
+
+button.button-icon {
+  display: grid;
+  width: 26px;
+  min-width: 26px;
+  height: 26px;
+  min-height: 26px;
+  place-items: center;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  padding: 0;
+  font-size: 0.9rem;
+  line-height: 1;
+}
+
+button.button-icon:hover {
+  background: transparent;
+  color: var(--green);
+}
+
+button.button-icon.button-danger {
+  background: transparent;
+  color: var(--red);
+}
+
+button.button-icon.button-danger:hover {
+  background: transparent;
+  color: #ffaaa2;
+}
+
+.connection-state {
+  display: inline-flex;
+  align-items: center;
+}
+
+.connection-led {
+  width: 8px;
+  height: 8px;
+  flex: 0 0 8px;
+  border-radius: 50%;
+  background: var(--muted);
+}
+
+.connection-state.is-connected {
+  color: var(--green);
+}
+
+.connection-state.is-connected .connection-led {
+  background: var(--green);
+}
+
+.connection-state.is-authentication .connection-led {
+  background: var(--amber);
+}
+
+.connection-state.is-disconnected .connection-led {
+  background: var(--red);
+}
+
 .machine-header p {
   margin: 4px 0 0;
   overflow-wrap: anywhere;
@@ -260,6 +320,20 @@ button.button-small {
 
 .machine-header .target-actions {
   justify-content: flex-end;
+}
+
+.machine-actions {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+
+.machine-message {
+  min-height: 1.3em;
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 0.75rem;
+  overflow-wrap: anywhere;
 }
 
 .machine-services h4 {
@@ -271,7 +345,7 @@ button.button-small {
 
 .service-row {
   display: grid;
-  grid-template-columns: minmax(90px, 1fr) minmax(120px, 1.2fr);
+  grid-template-columns: minmax(80px, 1fr) minmax(110px, 1.2fr) auto;
   gap: 3px 12px;
   padding: 8px 0;
   border-top: 1px solid var(--line);
@@ -284,12 +358,32 @@ button.button-small {
 }
 
 .service-row time {
-  grid-column: 1 / -1;
   color: var(--muted);
   font-size: 0.72rem;
 }
 
-#delete-dialog {
+.service-actions {
+  grid-column: 1 / -1;
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.service-actions button {
+  min-height: 26px;
+  padding: 2px 7px;
+  font-size: 0.7rem;
+}
+
+.dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 20px;
+}
+
+#delete-dialog,
+#remote-action-dialog {
   width: min(440px, calc(100vw - 32px));
   margin: auto;
   padding: 20px;
@@ -299,25 +393,70 @@ button.button-small {
   color: var(--text);
 }
 
-#delete-dialog::backdrop {
+#delete-dialog::backdrop,
+#remote-action-dialog::backdrop {
   background: rgba(0, 0, 0, 0.78);
 }
 
-#delete-dialog h2 {
+#delete-dialog h2,
+#remote-action-dialog h2 {
   margin: 0 0 8px;
 }
 
-#delete-dialog p {
+#delete-dialog p,
+#remote-action-message {
   margin: 0;
   color: var(--muted);
   overflow-wrap: anywhere;
 }
 
-.dialog-actions {
+#terminal-dialog {
+  width: min(980px, calc(100vw - 32px));
+  max-width: 980px;
+  height: min(700px, calc(100vh - 32px));
+  max-height: 700px;
+  margin: auto;
+  padding: 18px;
+  border: 1px solid var(--line-strong);
+  border-radius: 2px;
+  background: var(--surface);
+  color: var(--text);
+}
+
+#terminal-dialog::backdrop {
+  background: rgba(0, 0, 0, 0.82);
+}
+
+.terminal-header {
   display: flex;
-  justify-content: flex-end;
-  gap: 8px;
-  margin-top: 20px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.terminal-header h2 {
+  margin: 0;
+}
+
+.terminal-header p,
+#terminal-message {
+  margin: 3px 0 0;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+#terminal-screen {
+  height: calc(100% - 68px);
+  min-height: 240px;
+  padding: 8px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  background: #080a08;
+}
+
+#terminal-screen .xterm {
+  height: 100%;
 }
 
 @media (max-width: 700px) {
@@ -338,6 +477,14 @@ button.button-small {
     justify-content: flex-start;
   }
 
+  .service-row {
+    grid-template-columns: minmax(90px, 1fr) minmax(100px, 1fr);
+  }
+
+  .service-row time {
+    grid-column: 1 / -1;
+  }
+
   .password-form {
     align-items: stretch;
     flex-direction: column;
@@ -345,5 +492,9 @@ button.button-small {
 
   .password-form button {
     align-self: flex-start;
+  }
+
+  #terminal-dialog {
+    padding: 12px;
   }
 }

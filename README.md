@@ -75,7 +75,7 @@ The helper uses `/opt/monitoring-linux/rpmbuild` as its RPM build tree. On first
 2. Install it with:
 
 ```bash
-sudo dnf install -y ./linux-monitoring-1.0.0-7.el9.x86_64.rpm
+sudo dnf install -y ./linux-monitoring-1.0.0-13.el9.x86_64.rpm
 ```
 
 3. Ensure SSH access is configured to the remote Linux hosts, ideally with key-based authentication.
@@ -101,4 +101,4 @@ The RPM installs the application files in `/opt/monitoring-linux` and the comman
 
 and contains the local port and SSH settings. SQLite is compiled into the application binary, so the target machine does not need the SQLite runtime package or command-line tool. SQLite data is stored in `~/.local/share/monitoring-linux/monitoring.db` for the user who starts the application, so it can run without root privileges.
 
-The dashboard listens only on `127.0.0.1` and refreshes displayed data every 2.5 seconds without rebuilding unchanged content. Each monitored machine has its own panel containing its services and their status. Checks for up to four machines run concurrently, with one SSH session per machine for all configured services. You can provide its SSH password while adding or editing it; if omitted and key authentication fails, the panel asks for it. Passwords are kept in memory only and must be entered again after restarting the application; they are never written to SQLite. Adding or changing a target, or submitting its SSH password, wakes the monitor for an immediate next check.
+The dashboard listens only on `127.0.0.1` and refreshes displayed data every 2.5 seconds without rebuilding unchanged content. Each monitored machine has its own panel containing its services and their status. Use Restart/Stop beside a service or Reboot/Shutdown in the host controls; stop and machine power actions require confirmation. The SSH account must be authorized to run the requested `systemctl` operations. Checks for up to four machines run concurrently, with one SSH session per machine for all configured services. The Terminal action opens an interactive SSH shell in the browser. It reuses a password held in memory or lets OpenSSH prompt inside the terminal; passwords are never written to SQLite and must be entered again after restarting the application. Adding or changing a target, or submitting its SSH password, wakes the monitor for an immediate next check.

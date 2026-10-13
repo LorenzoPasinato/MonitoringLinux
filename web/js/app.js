@@ -8,6 +8,7 @@ async function fetchJson(url, options = {}) {
 let currentTargets = [];
 let statusRefreshInProgress = false;
 let lastRenderedState = '';
+let pendingRemoteAction = null;
 
 function escapeHtml(value) {
   return String(value ?? '').replace(/[&<>"']/g, (character) => ({
@@ -44,6 +45,10 @@ function renderMachines(targets, checks) {
           <span class="service-name">${escapeHtml(serviceName)}</span>
           <span class="${statusClass}">${escapeHtml(statusText)}</span>
           <time>${escapeHtml(check?.checked_at || 'Not checked yet')}</time>
+          <div class="service-actions">
+            <button type="button" class="button-secondary" data-action="restart-service" data-target-id="${target.id}" data-service="${escapeHtml(serviceName)}">Restart</button>
+            <button type="button" class="button-danger" data-action="stop-service" data-target-id="${target.id}" data-service="${escapeHtml(serviceName)}">Stop</button>
+          </div>
         </div>
       `;
     }).join('');
@@ -51,23 +56,44 @@ function renderMachines(targets, checks) {
       const check = machineChecks.get(serviceName);
       return check && ['password required', 'authentication failed'].includes(check.status_text);
     });
+    const checkResults = [...machineChecks.values()];
+    const sshConnected = checkResults.some((check) => ['active', 'inactive or not found'].includes(check.status_text));
+    const needsAuthentication = checkResults.some((check) => ['password required', 'authentication failed'].includes(check.status_text));
+    const connectionState = sshConnected ? 'connected' : (needsAuthentication ? 'authentication' : (checkResults.length ? 'disconnected' : 'pending'));
+    const connectionLabel = {
+      connected: 'SSH connected',
+      authentication: 'Authentication needed',
+      disconnected: 'No connection',
+      pending: 'Checking connection'
+    }[connectionState];
 
     return `
       <article class="machine-card">
         <header class="machine-header">
           <div>
-            <h3>${escapeHtml(target.name)}</h3>
-            <p>${escapeHtml(target.ip)} · ${escapeHtml(target.username)}:${target.port}</p>
+            <div class="machine-title-row">
+              <span class="connection-state is-${connectionState}" role="img" title="${connectionLabel}" aria-label="${connectionLabel}">
+                <span class="connection-led" aria-hidden="true"></span>
+              </span>
+              <h3>${escapeHtml(target.name)}</h3>
+              <div class="machine-title-actions">
+                <button type="button" class="button-secondary button-icon" data-action="edit" data-target-id="${target.id}" aria-label="Edit ${escapeHtml(target.name)}" title="Edit machine">&#9998;</button>
+                <button type="button" class="button-danger button-icon" data-action="delete" data-target-id="${target.id}" aria-label="Delete ${escapeHtml(target.name)}" title="Delete machine">&#x1F5D1;&#xFE0E;</button>
+              </div>
+            </div>
+            <p>${escapeHtml(target.username)}@${escapeHtml(target.ip)}&nbsp;&nbsp; port:${target.port}</p>
           </div>
           <div class="target-actions">
-            <button type="button" class="button-secondary button-small" data-action="edit" data-target-id="${target.id}">Edit</button>
-            <button type="button" class="button-danger button-small" data-action="delete" data-target-id="${target.id}">Delete</button>
+            <button type="button" class="button-secondary button-small" data-action="terminal" data-target-id="${target.id}">Terminal</button>
+            <button type="button" class="button-secondary button-small" data-action="reboot" data-target-id="${target.id}">Reboot</button>
+            <button type="button" class="button-danger button-small" data-action="poweroff" data-target-id="${target.id}">Shutdown</button>
           </div>
         </header>
         <div class="machine-services">
           <h4>Services</h4>
           ${services || '<p class="muted">No services configured</p>'}
         </div>
+        <p class="machine-message" data-machine-message="${target.id}" role="status" aria-live="polite"></p>
         ${authNeeded ? `
           <form class="password-form" data-password-form="${target.id}">
             <label>SSH password
@@ -117,7 +143,63 @@ async function loadStatus() {
 const targetForm = document.getElementById('target-form');
 const targetMessage = document.getElementById('target-message');
 const deleteDialog = document.getElementById('delete-dialog');
+const terminalDialog = document.getElementById('terminal-dialog');
+const remoteActionDialog = document.getElementById('remote-action-dialog');
 let pendingDeleteTargetId = null;
+let activeTerminal = null;
+
+function closeTerminal() {
+  if (!activeTerminal) return;
+  activeTerminal.socket.close();
+  activeTerminal.terminal.dispose();
+  activeTerminal = null;
+}
+
+function openTerminal(target) {
+  if (activeTerminal) closeTerminal();
+
+  const terminalHost = document.getElementById('terminal-host');
+  const terminalMessage = document.getElementById('terminal-message');
+  const terminalScreen = document.getElementById('terminal-screen');
+  terminalHost.textContent = `${target.name} · ${target.username}@${target.ip}:${target.port}`;
+  terminalMessage.textContent = 'Connecting over SSH...';
+  terminalDialog.showModal();
+
+  const terminal = new window.Terminal({
+    cursorBlink: true,
+    fontFamily: 'Cascadia Code, Consolas, monospace',
+    fontSize: 13,
+    theme: { background: '#080a08', foreground: '#dce5dc', cursor: '#a3d977', selectionBackground: '#394737' }
+  });
+  const fitAddon = new window.FitAddon.FitAddon();
+  terminal.loadAddon(fitAddon);
+  terminal.open(terminalScreen);
+  fitAddon.fit();
+
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const socket = new WebSocket(`${protocol}//${window.location.host}/api/targets/${target.id}/terminal`);
+  activeTerminal = { terminal, fitAddon, socket, targetId: target.id };
+
+  socket.addEventListener('open', () => {
+    terminalMessage.textContent = 'Connected';
+    terminal.focus();
+    socket.send(JSON.stringify({ type: 'resize', cols: terminal.cols, rows: terminal.rows }));
+  });
+  socket.addEventListener('message', (event) => terminal.write(event.data));
+  socket.addEventListener('error', () => {
+    terminalMessage.textContent = 'SSH terminal connection failed';
+  });
+  socket.addEventListener('close', () => {
+    terminalMessage.textContent = 'SSH session closed';
+  });
+  terminal.onData((data) => {
+    if (socket.readyState === WebSocket.OPEN) socket.send(data);
+  });
+  terminal.onResize(({ cols, rows }) => {
+    if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'resize', cols, rows }));
+  });
+  requestAnimationFrame(() => fitAddon.fit());
+}
 
 function resetTargetForm() {
   targetForm.reset();
@@ -171,6 +253,52 @@ targetForm?.addEventListener('submit', async (event) => {
 });
 
 document.getElementById('cancel-edit')?.addEventListener('click', resetTargetForm);
+document.getElementById('close-terminal')?.addEventListener('click', () => terminalDialog.close());
+terminalDialog?.addEventListener('close', closeTerminal);
+terminalDialog?.addEventListener('cancel', closeTerminal);
+
+async function executeRemoteAction(target, action, service) {
+  const message = document.querySelector(`[data-machine-message="${target.id}"]`);
+  if (message) message.textContent = 'Sending remote command...';
+  try {
+    const response = await fetch(`/api/targets/${target.id}/actions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ action, service }).toString()
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.output || result.status || `HTTP ${response.status}`);
+    await loadStatus();
+    const updatedMessage = document.querySelector(`[data-machine-message="${target.id}"]`);
+    if (updatedMessage) updatedMessage.textContent = `${result.status}: ${result.output || action}`;
+  } catch (error) {
+    if (message) message.textContent = `Command failed: ${error.message}`;
+  }
+}
+
+function confirmRemoteAction(target, action, service = '') {
+  pendingRemoteAction = { target, action, service };
+  const actionNames = {
+    'stop-service': `Stop ${service} on ${target.name}`,
+    reboot: `Reboot ${target.name}`,
+    poweroff: `Shut down the entire machine ${target.name}`
+  };
+  document.getElementById('remote-action-title').textContent = 'Confirm remote action';
+  document.getElementById('remote-action-message').textContent = `${actionNames[action] || action}? This command will be sent over SSH.`;
+  document.getElementById('confirm-remote-action').textContent = action === 'poweroff' ? 'Shutdown' : 'Confirm';
+  remoteActionDialog.showModal();
+}
+
+document.getElementById('cancel-remote-action')?.addEventListener('click', () => remoteActionDialog.close());
+document.getElementById('confirm-remote-action')?.addEventListener('click', async () => {
+  const action = pendingRemoteAction;
+  pendingRemoteAction = null;
+  remoteActionDialog.close();
+  if (action) await executeRemoteAction(action.target, action.action, action.service);
+});
+remoteActionDialog?.addEventListener('close', () => {
+  pendingRemoteAction = null;
+});
 
 async function deleteTarget(targetId) {
   const target = currentTargets.find((item) => item.id === targetId);
@@ -208,6 +336,21 @@ document.getElementById('machines-list')?.addEventListener('click', async (event
   const targetId = Number(button.dataset.targetId);
   const target = currentTargets.find((item) => item.id === targetId);
   if (!target) return;
+
+  if (button.dataset.action === 'terminal') {
+    openTerminal(target);
+    return;
+  }
+
+  if (button.dataset.action === 'restart-service') {
+    await executeRemoteAction(target, button.dataset.action, button.dataset.service);
+    return;
+  }
+
+  if (['stop-service', 'reboot', 'poweroff'].includes(button.dataset.action)) {
+    confirmRemoteAction(target, button.dataset.action, button.dataset.service || '');
+    return;
+  }
 
   if (button.dataset.action === 'edit') {
     targetForm.dataset.targetId = String(target.id);

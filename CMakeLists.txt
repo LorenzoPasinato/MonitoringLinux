@@ -22,7 +22,7 @@ target_include_directories(monitoring-linux PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
 
-target_link_libraries(monitoring-linux PRIVATE sqlite3)
+target_link_libraries(monitoring-linux PRIVATE sqlite3 util)
 
 install(TARGETS monitoring-linux RUNTIME DESTINATION monitoring-linux)
 install(PROGRAMS packaging/ssh-askpass.sh DESTINATION monitoring-linux RENAME monitoring-linux-ssh-askpass)
