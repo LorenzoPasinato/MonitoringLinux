@@ -116,6 +116,8 @@ async function loadStatus() {
 
 const targetForm = document.getElementById('target-form');
 const targetMessage = document.getElementById('target-message');
+const deleteDialog = document.getElementById('delete-dialog');
+let pendingDeleteTargetId = null;
 
 function resetTargetForm() {
   targetForm.reset();
@@ -170,6 +172,35 @@ targetForm?.addEventListener('submit', async (event) => {
 
 document.getElementById('cancel-edit')?.addEventListener('click', resetTargetForm);
 
+async function deleteTarget(targetId) {
+  const target = currentTargets.find((item) => item.id === targetId);
+  if (!target) return;
+
+  try {
+    await fetchJson(`/api/targets/${target.id}`, { method: 'DELETE' });
+    if (targetForm.dataset.targetId === String(target.id)) resetTargetForm();
+    await loadStatus();
+  } catch (error) {
+    window.alert(`Unable to delete machine: ${error.message}`);
+  }
+}
+
+document.getElementById('cancel-delete')?.addEventListener('click', () => deleteDialog.close());
+document.getElementById('confirm-delete')?.addEventListener('click', async () => {
+  const targetId = pendingDeleteTargetId;
+  pendingDeleteTargetId = null;
+  deleteDialog.close();
+  if (targetId !== null) await deleteTarget(targetId);
+});
+
+deleteDialog?.addEventListener('close', () => {
+  pendingDeleteTargetId = null;
+});
+
+deleteDialog?.addEventListener('click', (event) => {
+  if (event.target === deleteDialog) deleteDialog.close();
+});
+
 document.getElementById('machines-list')?.addEventListener('click', async (event) => {
   const button = event.target.closest('button[data-action]');
   if (!button) return;
@@ -194,14 +225,10 @@ document.getElementById('machines-list')?.addEventListener('click', async (event
     return;
   }
 
-  if (button.dataset.action === 'delete' && window.confirm(`Delete ${target.name} and its check history?`)) {
-    try {
-      await fetchJson(`/api/targets/${target.id}`, { method: 'DELETE' });
-      if (targetForm.dataset.targetId === String(target.id)) resetTargetForm();
-      await loadStatus();
-    } catch (error) {
-      window.alert(`Unable to delete machine: ${error.message}`);
-    }
+  if (button.dataset.action === 'delete') {
+    pendingDeleteTargetId = target.id;
+    document.getElementById('delete-dialog-message').textContent = `Delete ${target.name} and its check history?`;
+    deleteDialog.showModal();
   }
 });
 
