@@ -22,12 +22,18 @@
               <input type="text" id="name" maxlength="80" placeholder="Automatic: VM_1, VM_2, ..." />
             </label>
             <label>
-              IP address
-              <input type="text" id="ip" placeholder="10.0.0.22" required />
-            </label>
-            <label>
               SSH user
               <input type="text" id="username" value="root" required />
+            </label>
+            <label>
+              SSH password
+              <input type="password" id="password" autocomplete="new-password" placeholder="Optional; kept only while the app runs" />
+            </label>
+          </div>
+          <div class="row">
+            <label>
+              IP address
+              <input type="text" id="ip" placeholder="10.0.0.22" required />
             </label>
             <label>
               SSH port
@@ -38,12 +44,6 @@
             <label class="full-width">
               Services to monitor
               <input type="text" id="services" placeholder="sshd,nginx,httpd" required />
-            </label>
-          </div>
-          <div class="row">
-            <label>
-              SSH password
-              <input type="password" id="password" autocomplete="new-password" placeholder="Optional; kept only while the app runs" />
             </label>
           </div>
           <div class="form-actions">
