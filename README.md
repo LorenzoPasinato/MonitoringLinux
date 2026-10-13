@@ -50,10 +50,15 @@ ssh-copy-id root@10.0.0.22
 
 The RPM spec is available in `packagin/rpm/linux-monitoring.spec`.
 
+This project is intentionally designed as a manual-start application:
+- no automatic systemd activation
+- no external package installation required beyond the standard OS base libraries
+- installed from a standalone RPM and launched manually from the command line
+
 Install the build prerequisites on the build machine:
 
 ```bash
-dnf install -y rpm-build rpmdevtools gcc-c++ cmake sqlite-devel openssh-clients
+dnf install -y rpm-build rpmdevtools gcc-c++ cmake sqlite-devel
 ```
 
 Then build the package:
@@ -68,7 +73,7 @@ or directly:
 rpmbuild -bb packagin/rpm/linux-monitoring.spec
 ```
 
-The generated RPM will be in the standard RPM build output tree, usually:
+The generated RPM will be in the standard RPM output tree, usually:
 
 ```text
 ~/rpmbuild/RPMS/x86_64/
@@ -80,18 +85,17 @@ The generated RPM will be in the standard RPM build output tree, usually:
 2. Install it with:
 
 ```bash
-dnf install ./linux-monitoring-1.0.0-1.el9.x86_64.rpm
+rpm -Uvh ./linux-monitoring-1.0.0-1.el9.x86_64.rpm
 ```
 
 3. Ensure SSH access is configured to the remote Linux hosts, ideally with key-based authentication.
-4. Start the service:
+4. Launch the app manually from the command line:
 
 ```bash
-systemctl start linux-monitoring
-systemctl enable linux-monitoring
+/usr/sbin/monitoring-linux --config /etc/monitoring-linux/monitoring.conf
 ```
 
-5. Open the local dashboard:
+5. Open the local dashboard in the browser:
 
 ```text
 http://localhost:8080/
@@ -105,4 +109,4 @@ The default configuration is placed in:
 /etc/monitoring-linux/monitoring.conf
 ```
 
-and contains the local port and local SQLite path.
+and contains the local port, local SQLite path and the SSH-related settings used by the monitor.
