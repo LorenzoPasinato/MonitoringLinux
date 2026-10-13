@@ -81,6 +81,7 @@ Database::~Database() {
 }
 
 bool Database::initialize() {
+    std::lock_guard<std::mutex> lock(mutex_);
     auto* db = reinterpret_cast<sqlite3*>(db_);
     if (db == nullptr) {
         return false;
@@ -88,6 +89,11 @@ bool Database::initialize() {
 
     if (sqlite3_exec(db, "PRAGMA foreign_keys = ON;", nullptr, nullptr, nullptr) != SQLITE_OK) {
         std::cerr << "Failed to enable SQLite foreign keys: " << sqlite3_errmsg(db) << std::endl;
+        return false;
+    }
+    sqlite3_busy_timeout(db, 3000);
+    if (sqlite3_exec(db, "PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA temp_store = MEMORY;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        std::cerr << "Failed to configure SQLite for responsive local access: " << sqlite3_errmsg(db) << std::endl;
         return false;
     }
 
@@ -124,6 +130,11 @@ bool Database::initialize() {
         return false;
     }
 
+    if (sqlite3_exec(db, "CREATE INDEX IF NOT EXISTS idx_checks_latest ON checks(ip, service_name, id DESC);", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        std::cerr << "Failed to index service checks: " << sqlite3_errmsg(db) << std::endl;
+        return false;
+    }
+
     bool hasNameColumn = false;
     sqlite3_stmt* columns = nullptr;
     if (sqlite3_prepare_v2(db, "PRAGMA table_info(targets);", -1, &columns, nullptr) != SQLITE_OK) {
@@ -156,6 +167,7 @@ bool Database::initialize() {
 }
 
 std::vector<RemoteTarget> Database::listTargets() const {
+    std::lock_guard<std::mutex> lock(mutex_);
     std::vector<RemoteTarget> targets;
     auto* db = reinterpret_cast<sqlite3*>(db_);
     if (db == nullptr) {
@@ -192,6 +204,7 @@ std::vector<RemoteTarget> Database::listTargets() const {
 }
 
 bool Database::upsertTarget(const std::string& name, const std::string& ip, const std::string& username, int port, const std::string& services) {
+    std::lock_guard<std::mutex> lock(mutex_);
     auto* db = reinterpret_cast<sqlite3*>(db_);
     if (db == nullptr) {
         return false;
@@ -252,6 +265,7 @@ bool Database::upsertTarget(const std::string& name, const std::string& ip, cons
 }
 
 bool Database::updateTarget(int id, const std::string& name, const std::string& ip, const std::string& username, int port, const std::string& services) {
+    std::lock_guard<std::mutex> lock(mutex_);
     auto* db = reinterpret_cast<sqlite3*>(db_);
     if (db == nullptr) {
         return false;
@@ -276,6 +290,7 @@ bool Database::updateTarget(int id, const std::string& name, const std::string& 
 }
 
 bool Database::deleteTarget(int id) {
+    std::lock_guard<std::mutex> lock(mutex_);
     auto* db = reinterpret_cast<sqlite3*>(db_);
     if (db == nullptr || sqlite3_exec(db, "BEGIN IMMEDIATE;", nullptr, nullptr, nullptr) != SQLITE_OK) {
         return false;
@@ -306,50 +321,72 @@ bool Database::deleteTarget(int id) {
 }
 
 bool Database::saveCheckResult(const ServiceCheckResult& result) {
+    return saveCheckResults({result});
+}
+
+bool Database::saveCheckResults(const std::vector<ServiceCheckResult>& results) {
+    std::lock_guard<std::mutex> lock(mutex_);
     auto* db = reinterpret_cast<sqlite3*>(db_);
-    if (db == nullptr) {
+    if (db == nullptr || results.empty()) {
         return false;
     }
 
-    const char* sql = R"(
+    if (sqlite3_exec(db, "BEGIN IMMEDIATE;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        return false;
+    }
+
+    const char* insertSql = R"(
         INSERT INTO checks (target_id, ip, username, service_name, active, status_text, checked_at)
         VALUES (?, ?, ?, ?, ?, ?, ?);
     )";
-
-    sqlite3_stmt* stmt = nullptr;
-    if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
-        std::cerr << "Unable to prepare check result insert: " << sqlite3_errmsg(db) << std::endl;
-        return false;
-    }
-
-    sqlite3_bind_int(stmt, 1, result.targetId);
-    sqlite3_bind_text(stmt, 2, result.ip.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt, 3, result.username.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt, 4, result.serviceName.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int(stmt, 5, result.active ? 1 : 0);
-    sqlite3_bind_text(stmt, 6, result.statusText.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt, 7, result.checkedAt.c_str(), -1, SQLITE_TRANSIENT);
-
-    const int rc = sqlite3_step(stmt);
-    sqlite3_finalize(stmt);
-    if (rc != SQLITE_DONE) {
-        return false;
-    }
-
     const char* updateSql = "UPDATE targets SET last_status = ?, last_checked_at = ? WHERE ip = ?;";
+    sqlite3_stmt* insert = nullptr;
     sqlite3_stmt* update = nullptr;
-    if (sqlite3_prepare_v2(db, updateSql, -1, &update, nullptr) != SQLITE_OK) {
+    if (sqlite3_prepare_v2(db, insertSql, -1, &insert, nullptr) != SQLITE_OK ||
+        sqlite3_prepare_v2(db, updateSql, -1, &update, nullptr) != SQLITE_OK) {
+        std::cerr << "Unable to prepare check result insert: " << sqlite3_errmsg(db) << std::endl;
+        sqlite3_finalize(insert);
+        sqlite3_finalize(update);
+        sqlite3_exec(db, "ROLLBACK;", nullptr, nullptr, nullptr);
         return false;
     }
-    sqlite3_bind_text(update, 1, result.statusText.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(update, 2, result.checkedAt.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(update, 3, result.ip.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_step(update);
+
+    bool ok = true;
+    for (const auto& result : results) {
+        sqlite3_reset(insert);
+        sqlite3_clear_bindings(insert);
+        sqlite3_bind_int(insert, 1, result.targetId);
+        sqlite3_bind_text(insert, 2, result.ip.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(insert, 3, result.username.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(insert, 4, result.serviceName.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int(insert, 5, result.active ? 1 : 0);
+        sqlite3_bind_text(insert, 6, result.statusText.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(insert, 7, result.checkedAt.c_str(), -1, SQLITE_TRANSIENT);
+        if (sqlite3_step(insert) != SQLITE_DONE) {
+            ok = false;
+            break;
+        }
+
+        sqlite3_reset(update);
+        sqlite3_clear_bindings(update);
+        sqlite3_bind_text(update, 1, result.statusText.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(update, 2, result.checkedAt.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(update, 3, result.ip.c_str(), -1, SQLITE_TRANSIENT);
+        if (sqlite3_step(update) != SQLITE_DONE) {
+            ok = false;
+            break;
+        }
+    }
+    sqlite3_finalize(insert);
     sqlite3_finalize(update);
-    return true;
+    if (sqlite3_exec(db, ok ? "COMMIT;" : "ROLLBACK;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        return false;
+    }
+    return ok;
 }
 
 std::vector<ServiceCheckResult> Database::getLatestChecks() const {
+    std::lock_guard<std::mutex> lock(mutex_);
     std::vector<ServiceCheckResult> results;
     auto* db = reinterpret_cast<sqlite3*>(db_);
     if (db == nullptr) {
@@ -357,15 +394,16 @@ std::vector<ServiceCheckResult> Database::getLatestChecks() const {
     }
 
     const char* sql = R"(
-        WITH ranked AS (
-            SELECT checks.id, checks.target_id, targets.name, checks.ip, checks.username, checks.service_name, checks.active, checks.status_text, checks.checked_at,
-                   ROW_NUMBER() OVER (PARTITION BY checks.ip, checks.service_name ORDER BY checks.id DESC) AS rn
-            FROM checks LEFT JOIN targets ON targets.id = checks.target_id
-        )
-        SELECT id, target_id, name, ip, username, service_name, active, status_text, checked_at
-        FROM ranked
-        WHERE rn = 1
-        ORDER BY checked_at DESC;
+        SELECT checks.id, checks.target_id, targets.name, checks.ip, checks.username,
+               checks.service_name, checks.active, checks.status_text, checks.checked_at
+        FROM checks
+        JOIN (
+            SELECT MAX(id) AS id
+            FROM checks
+            GROUP BY ip, service_name
+        ) latest ON latest.id = checks.id
+        LEFT JOIN targets ON targets.id = checks.target_id
+        ORDER BY checks.checked_at DESC;
     )";
 
     sqlite3_stmt* stmt = nullptr;

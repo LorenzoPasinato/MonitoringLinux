@@ -40,6 +40,12 @@
               <input type="text" id="services" placeholder="sshd,nginx,httpd" required />
             </label>
           </div>
+          <div class="row">
+            <label>
+              SSH password
+              <input type="password" id="password" autocomplete="new-password" placeholder="Optional; kept only while the app runs" />
+            </label>
+          </div>
           <div class="form-actions">
             <button type="submit" id="save-target">Save target</button>
             <button type="button" id="cancel-edit" class="button-secondary" hidden>Cancel</button>
@@ -49,39 +55,8 @@
       </section>
 
       <section class="panel">
-        <h2>Monitored hosts</h2>
-        <div class="table-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th>Machine</th>
-              <th>User</th>
-              <th>Services</th>
-              <th>Last status</th>
-              <th>Last check</th>
-              <th>Actions</th>
-            </tr>
-          </thead>
-          <tbody id="targets-body"></tbody>
-        </table>
-        </div>
-      </section>
-
-      <section class="panel">
-        <h2>Service status</h2>
-        <div class="table-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th>Host</th>
-              <th>Service</th>
-              <th>Status</th>
-              <th>Checked at</th>
-            </tr>
-          </thead>
-          <tbody id="checks-body"></tbody>
-        </table>
-        </div>
+        <h2>Monitored machines</h2>
+        <div id="machines-list" class="machine-grid" aria-live="polite"></div>
       </section>
     </div>
 

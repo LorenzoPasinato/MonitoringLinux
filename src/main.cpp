@@ -17,6 +17,7 @@
 #include <sys/wait.h>
 #include <thread>
 #include <unistd.h>
+#include <algorithm>
 #include <vector>
 
 extern "C" char** environ;
@@ -220,49 +221,88 @@ int runSsh(const RemoteTarget& target, const std::string& remoteCommand, const s
     return WIFEXITED(childStatus) ? WEXITSTATUS(childStatus) : 255;
 }
 
-ServiceCheckResult probeRemoteService(const RemoteTarget& target, const std::string& serviceName, const std::string& password) {
-    ServiceCheckResult result;
-    result.name = target.name;
-    result.ip = target.ip;
-    result.username = target.username;
-    result.serviceName = serviceName;
-    result.checkedAt = nowIso();
-    result.targetId = target.id;
+std::vector<ServiceCheckResult> probeRemoteServices(const RemoteTarget& target, const std::vector<std::string>& serviceNames, const std::string& password) {
+    std::vector<ServiceCheckResult> results;
+    if (serviceNames.empty()) return results;
 
-    const std::string remoteCommand = "systemctl is-active --quiet " + quoteRemoteArgument(serviceName) + "; check_status=$?; printf '\\n__MONITORING_STATUS:%s\\n' \"$check_status\"";
+    const std::string checkedAt = nowIso();
+    for (const auto& serviceName : serviceNames) {
+        ServiceCheckResult result;
+        result.name = target.name;
+        result.ip = target.ip;
+        result.username = target.username;
+        result.serviceName = serviceName;
+        result.checkedAt = checkedAt;
+        result.targetId = target.id;
+        results.push_back(std::move(result));
+    }
+
+    std::string remoteCommand;
+    for (size_t index = 0; index < serviceNames.size(); ++index) {
+        remoteCommand += "systemctl is-active --quiet " + quoteRemoteArgument(serviceNames[index]) +
+                         "; check_status=$?; printf '\\n__MONITORING_RESULT__" + std::to_string(index) + ":%s\\n' \"$check_status\"; ";
+    }
     std::string output;
     const int exitCode = runSsh(target, remoteCommand, password, output);
 
-    const std::string marker = "__MONITORING_STATUS:";
-    const auto pos = output.rfind(marker);
-    if (pos != std::string::npos) {
-        const std::string statusCode = trim(output.substr(pos + marker.size()));
-        result.active = statusCode == "0";
-        result.statusText = result.active ? "active" : "inactive or not found";
-    } else {
-        result.active = false;
+    const std::string marker = "__MONITORING_RESULT__";
+    size_t position = 0;
+    size_t completed = 0;
+    while ((position = output.find(marker, position)) != std::string::npos) {
+        const size_t lineEnd = output.find_first_of("\r\n", position);
+        const std::string resultLine = output.substr(position + marker.size(), lineEnd - position - marker.size());
+        const size_t separator = resultLine.find(':');
+        if (separator != std::string::npos) {
+            try {
+                const size_t resultIndex = static_cast<size_t>(std::stoul(resultLine.substr(0, separator)));
+                if (resultIndex < results.size()) {
+                    results[resultIndex].active = resultLine.substr(separator + 1) == "0";
+                    results[resultIndex].statusText = results[resultIndex].active ? "active" : "inactive or not found";
+                    ++completed;
+                }
+            } catch (...) {
+            }
+        }
+        if (lineEnd == std::string::npos) break;
+        position = lineEnd + 1;
+    }
+
+    if (completed != results.size()) {
         const bool denied = output.find("Permission denied") != std::string::npos || output.find("Authentication failed") != std::string::npos;
-        if (denied) {
-            result.statusText = password.empty() ? "password required" : "authentication failed";
-        } else {
-            result.statusText = exitCode == 127 ? "ssh command not found" : "ssh unavailable";
+        const std::string errorStatus = denied ? (password.empty() ? "password required" : "authentication failed") :
+                                        (exitCode == 127 ? "ssh command not found" : "ssh unavailable");
+        for (auto& result : results) {
+            if (result.statusText.empty()) result.statusText = errorStatus;
         }
     }
 
-    return result;
+    return results;
 }
 
-void monitorLoop(Database& db, SshCredentials& credentials, const Config& config, std::atomic<bool>& running) {
+void monitorLoop(Database& db, SshCredentials& credentials, MonitorSignal& monitorSignal, const Config& config, std::atomic<bool>& running) {
     while (running) {
         const auto targets = db.listTargets();
-        for (const auto& target : targets) {
-            auto serviceList = splitCsv(target.services);
-            for (const auto& serviceName : serviceList) {
-                auto check = probeRemoteService(target, serviceName, credentials.passwordFor(target.id));
-                db.saveCheckResult(check);
-            }
+        std::atomic<size_t> nextTarget{0};
+        const size_t workerCount = std::min<size_t>(4, targets.size());
+        std::vector<std::thread> workers;
+        workers.reserve(workerCount);
+        for (size_t worker = 0; worker < workerCount; ++worker) {
+            workers.emplace_back([&] {
+                while (running) {
+                    const size_t index = nextTarget.fetch_add(1);
+                    if (index >= targets.size()) break;
+                    const auto services = splitCsv(targets[index].services);
+                    const auto checks = probeRemoteServices(targets[index], services, credentials.passwordFor(targets[index].id));
+                    db.saveCheckResults(checks);
+                }
+            });
         }
-        std::this_thread::sleep_for(std::chrono::seconds(config.checkIntervalSeconds));
+        for (auto& worker : workers) {
+            worker.join();
+        }
+        if (!monitorSignal.waitForNext(config.checkIntervalSeconds, running)) {
+            break;
+        }
     }
 }
 
@@ -330,11 +370,12 @@ int main(int argc, char** argv) {
     }
 
     SshCredentials credentials;
+    MonitorSignal monitorSignal;
     std::atomic<bool> running{true};
-    std::thread monitorThread(monitorLoop, std::ref(db), std::ref(credentials), std::cref(config), std::ref(running));
+    std::thread monitorThread(monitorLoop, std::ref(db), std::ref(credentials), std::ref(monitorSignal), std::cref(config), std::ref(running));
 
     try {
-        HttpServer server(db, credentials, config.host, config.port, config.webRoot);
+        HttpServer server(db, credentials, monitorSignal, config.host, config.port, config.webRoot);
         server.run();
     } catch (const std::exception& ex) {
         std::cerr << ex.what() << std::endl;
@@ -342,6 +383,7 @@ int main(int argc, char** argv) {
     }
 
     running = false;
+    monitorSignal.notify();
     if (monitorThread.joinable()) {
         monitorThread.join();
     }

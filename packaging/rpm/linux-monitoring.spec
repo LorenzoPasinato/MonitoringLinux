@@ -1,6 +1,6 @@
 Name: linux-monitoring
 Version: 1.0.0
-Release: 4%{?dist}
+Release: 7%{?dist}
 Summary: Standalone Linux monitoring dashboard for remote VM service checks
 License: MIT
 URL: https://example.com/monitoring-linux
@@ -35,6 +35,14 @@ ln -s /opt/monitoring-linux/monitoring-linux %{buildroot}%{_bindir}/monitoring-l
 %config(noreplace) %{_sysconfdir}/monitoring-linux/monitoring.conf
 
 %changelog
+* Tue Oct 13 2026 - Release 7
+- Batch SSH service probes per machine and run checks with bounded concurrency
+- Serve HTTP requests with a fixed worker pool and batch SQLite writes
+* Tue Oct 13 2026 - Release 6
+- Add SSH password to the machine form and group services per machine
+* Tue Oct 13 2026 - Release 5
+- Refresh dashboard data without overlapping requests
+- Wake the monitor immediately after target or credential changes
 * Tue Oct 13 2026 - Release 4
 - Add named target management and optional in-memory SSH password prompts
 - Restrict the web dashboard to local access

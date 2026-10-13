@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <mutex>
 #include <vector>
 
 struct RemoteTarget {
@@ -38,9 +39,11 @@ public:
     bool deleteTarget(int id);
     std::vector<ServiceCheckResult> getLatestChecks() const;
     bool saveCheckResult(const ServiceCheckResult& result);
+    bool saveCheckResults(const std::vector<ServiceCheckResult>& results);
 
 private:
     std::string dbPath_;
     void* db_ = nullptr;
+    mutable std::mutex mutex_;
 };
 

@@ -6,6 +6,8 @@ async function fetchJson(url, options = {}) {
 }
 
 let currentTargets = [];
+let statusRefreshInProgress = false;
+let lastRenderedState = '';
 
 function escapeHtml(value) {
   return String(value ?? '').replace(/[&<>"']/g, (character) => ({
@@ -17,75 +19,98 @@ function escapeHtml(value) {
   })[character]);
 }
 
-function renderTargets(targets) {
-  const tbody = document.getElementById('targets-body');
-  if (!tbody) return;
+function renderMachines(targets, checks) {
+  const machineList = document.getElementById('machines-list');
+  if (!machineList) return;
 
   currentTargets = targets || [];
-  tbody.innerHTML = (targets || []).map((target) => {
-    const needsPassword = ['password required', 'authentication failed'].includes(target.last_status);
-    const statusClass = target.last_status === 'active' ? 'status-online' : (needsPassword ? 'status-auth' : 'status-offline');
+  const checksByTarget = new Map();
+  (checks || []).forEach((check) => {
+    const targetId = String(check.target_id);
+    if (!checksByTarget.has(targetId)) checksByTarget.set(targetId, new Map());
+    checksByTarget.get(targetId).set(check.service_name, check);
+  });
+
+  machineList.innerHTML = currentTargets.map((target) => {
+    const configuredServices = target.services.split(/[;,]/).map((service) => service.trim()).filter(Boolean);
+    const machineChecks = checksByTarget.get(String(target.id)) || new Map();
+    const services = configuredServices.map((serviceName) => {
+      const check = machineChecks.get(serviceName);
+      const authenticationNeeded = check && ['password required', 'authentication failed'].includes(check.status_text);
+      const statusClass = !check ? 'status-pending' : (check.active ? 'status-online' : (authenticationNeeded ? 'status-auth' : 'status-offline'));
+      const statusText = !check ? 'Waiting for first check' : (authenticationNeeded ? 'Authentication required' : check.status_text);
+      return `
+        <div class="service-row">
+          <span class="service-name">${escapeHtml(serviceName)}</span>
+          <span class="${statusClass}">${escapeHtml(statusText)}</span>
+          <time>${escapeHtml(check?.checked_at || 'Not checked yet')}</time>
+        </div>
+      `;
+    }).join('');
+    const authNeeded = configuredServices.some((serviceName) => {
+      const check = machineChecks.get(serviceName);
+      return check && ['password required', 'authentication failed'].includes(check.status_text);
+    });
+
     return `
-      <tr>
-        <td><strong>${escapeHtml(target.name)}</strong><br><span class="muted">${escapeHtml(target.ip)}</span></td>
-        <td>${escapeHtml(target.username)}</td>
-        <td>${escapeHtml(target.services)}</td>
-        <td class="${statusClass}">${escapeHtml(target.last_status || 'pending')}</td>
-        <td>${escapeHtml(target.last_checked_at || 'never')}</td>
-        <td>
+      <article class="machine-card">
+        <header class="machine-header">
+          <div>
+            <h3>${escapeHtml(target.name)}</h3>
+            <p>${escapeHtml(target.ip)} · ${escapeHtml(target.username)}:${target.port}</p>
+          </div>
           <div class="target-actions">
             <button type="button" class="button-secondary button-small" data-action="edit" data-target-id="${target.id}">Edit</button>
             <button type="button" class="button-danger button-small" data-action="delete" data-target-id="${target.id}">Delete</button>
           </div>
-          ${needsPassword ? `
-            <form class="password-form" data-password-form="${target.id}">
-              <input type="password" data-password-input="${target.id}" autocomplete="off" placeholder="SSH password" aria-label="SSH password for ${escapeHtml(target.name)}" required>
-              <button type="submit" class="button-small">Connect</button>
-            </form>
-          ` : ''}
-        </td>
-      </tr>
-    `;
-  }).join('');
-}
-
-function renderChecks(checks) {
-  const tbody = document.getElementById('checks-body');
-  if (!tbody) return;
-
-  tbody.innerHTML = (checks || []).map((check) => {
-    const statusClass = check.active ? 'status-online' : 'status-offline';
-    return `
-      <tr>
-        <td>${escapeHtml(check.name || check.ip)}</td>
-        <td>${escapeHtml(check.service_name)}</td>
-        <td class="${statusClass}">${check.active ? 'active' : 'inactive'}</td>
-        <td>${escapeHtml(check.checked_at)}</td>
-      </tr>
+        </header>
+        <div class="machine-services">
+          <h4>Services</h4>
+          ${services || '<p class="muted">No services configured</p>'}
+        </div>
+        ${authNeeded ? `
+          <form class="password-form" data-password-form="${target.id}">
+            <label>SSH password
+              <input type="password" data-password-input="${target.id}" autocomplete="off" placeholder="Enter password" aria-label="SSH password for ${escapeHtml(target.name)}" required>
+            </label>
+            <button type="submit" class="button-small">Connect</button>
+          </form>
+        ` : ''}
+      </article>
     `;
   }).join('');
 }
 
 async function loadStatus() {
+  if (statusRefreshInProgress) return;
+  statusRefreshInProgress = true;
   try {
-    const activePasswordInput = document.activeElement?.matches('[data-password-input]') ? {
-      targetId: document.activeElement.dataset.passwordInput,
-      value: document.activeElement.value
-    } : null;
-    const targetsData = await fetchJson('/api/targets');
-    renderTargets(targetsData.targets || []);
-    if (activePasswordInput) {
-      const passwordInput = document.querySelector(`[data-password-input="${activePasswordInput.targetId}"]`);
-      if (passwordInput) {
-        passwordInput.value = activePasswordInput.value;
-        passwordInput.focus();
+    const [targetsData, checksData] = await Promise.all([
+      fetchJson('/api/targets'),
+      fetchJson('/api/checks')
+    ]);
+    const targets = targetsData.targets || [];
+    const checks = checksData.checks || [];
+    const nextState = JSON.stringify([targets, checks]);
+    if (nextState !== lastRenderedState) {
+      const activePasswordInput = document.activeElement?.matches('[data-password-input]') ? {
+        targetId: document.activeElement.dataset.passwordInput,
+        value: document.activeElement.value
+      } : null;
+      renderMachines(targets, checks);
+      lastRenderedState = nextState;
+      if (activePasswordInput) {
+        const passwordInput = document.querySelector(`[data-password-input="${activePasswordInput.targetId}"]`);
+        if (passwordInput) {
+          passwordInput.value = activePasswordInput.value;
+          passwordInput.focus();
+        }
       }
     }
-
-    const checksData = await fetchJson('/api/checks');
-    renderChecks(checksData.checks || []);
   } catch (error) {
     console.error('Unable to load monitoring data:', error);
+  } finally {
+    statusRefreshInProgress = false;
   }
 }
 
@@ -97,6 +122,7 @@ function resetTargetForm() {
   targetForm.dataset.targetId = '';
   document.getElementById('username').value = 'root';
   document.getElementById('port').value = '22';
+  document.getElementById('password').placeholder = 'Optional; kept only while the app runs';
   document.getElementById('target-form-title').textContent = 'Add target VM';
   document.getElementById('save-target').textContent = 'Save target';
   document.getElementById('cancel-edit').hidden = true;
@@ -109,6 +135,7 @@ targetForm?.addEventListener('submit', async (event) => {
   const ip = document.getElementById('ip').value.trim();
   const username = document.getElementById('username').value.trim();
   const port = document.getElementById('port').value || '22';
+  const password = document.getElementById('password').value;
   const services = document.getElementById('services').value.trim();
 
   if (!ip || !services) {
@@ -122,6 +149,7 @@ targetForm?.addEventListener('submit', async (event) => {
     port,
     services
   });
+  if (password) formData.set('password', password);
 
   try {
     const targetId = targetForm.dataset.targetId;
@@ -142,7 +170,7 @@ targetForm?.addEventListener('submit', async (event) => {
 
 document.getElementById('cancel-edit')?.addEventListener('click', resetTargetForm);
 
-document.getElementById('targets-body')?.addEventListener('click', async (event) => {
+document.getElementById('machines-list')?.addEventListener('click', async (event) => {
   const button = event.target.closest('button[data-action]');
   if (!button) return;
 
@@ -157,6 +185,8 @@ document.getElementById('targets-body')?.addEventListener('click', async (event)
     document.getElementById('username').value = target.username;
     document.getElementById('port').value = String(target.port);
     document.getElementById('services').value = target.services;
+    document.getElementById('password').value = '';
+    document.getElementById('password').placeholder = 'Leave blank to keep current password';
     document.getElementById('target-form-title').textContent = `Edit ${target.name}`;
     document.getElementById('save-target').textContent = 'Save changes';
     document.getElementById('cancel-edit').hidden = false;
@@ -175,7 +205,7 @@ document.getElementById('targets-body')?.addEventListener('click', async (event)
   }
 });
 
-document.getElementById('targets-body')?.addEventListener('submit', async (event) => {
+document.getElementById('machines-list')?.addEventListener('submit', async (event) => {
   const form = event.target.closest('form[data-password-form]');
   if (!form) return;
   event.preventDefault();
@@ -199,6 +229,6 @@ document.getElementById('targets-body')?.addEventListener('submit', async (event
   }
 });
 
-setInterval(loadStatus, 10000);
+setInterval(loadStatus, 2500);
 loadStatus();
 

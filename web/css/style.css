@@ -149,6 +149,74 @@ button.button-small {
   overflow-x: auto;
 }
 
+.machine-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 360px), 1fr));
+  gap: 12px;
+}
+
+.machine-card {
+  min-width: 0;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-alt);
+}
+
+.machine-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.machine-header h3,
+.machine-services h4 {
+  margin: 0;
+}
+
+.machine-header p {
+  margin: 6px 0 0;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.machine-header .target-actions {
+  min-width: 0;
+  justify-content: flex-end;
+}
+
+.machine-services h4 {
+  margin-bottom: 8px;
+  color: var(--muted);
+  font-size: 0.8rem;
+  text-transform: uppercase;
+}
+
+.service-row {
+  display: grid;
+  grid-template-columns: minmax(90px, 1fr) minmax(120px, 1.2fr);
+  gap: 4px 12px;
+  padding: 10px 0;
+  border-top: 1px solid var(--border);
+}
+
+.service-name {
+  overflow-wrap: anywhere;
+  font-weight: 600;
+}
+
+.service-row time {
+  grid-column: 1 / -1;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.status-pending {
+  color: var(--muted);
+}
+
 table {
   width: 100%;
   border-collapse: collapse;
@@ -163,8 +231,12 @@ table {
     padding: 14px;
   }
 
-  table {
-    min-width: 760px;
+  .machine-header {
+    flex-direction: column;
+  }
+
+  .machine-header .target-actions {
+    justify-content: flex-start;
   }
 
   label {

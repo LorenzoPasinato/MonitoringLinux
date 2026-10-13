@@ -3,11 +3,13 @@
 #include <arpa/inet.h>
 #include <algorithm>
 #include <cerrno>
+#include <cctype>
 #include <cstring>
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/time.h>
 #include <unistd.h>
 
 #include <filesystem>
@@ -131,9 +133,23 @@ void sendResponse(int clientFd, const std::string& status, const std::string& co
            << "Content-Length: " << body.size() << "\r\n"
            << "Connection: close\r\n\r\n";
 
-    send(clientFd, header.str().c_str(), header.str().size(), 0);
-    if (!body.empty()) {
-        send(clientFd, body.c_str(), body.size(), 0);
+    const std::string headerText = header.str();
+    const auto sendAll = [clientFd](const char* data, size_t size) {
+        size_t sent = 0;
+        while (sent < size) {
+            const ssize_t result = send(clientFd, data + sent, size - sent, MSG_NOSIGNAL);
+            if (result < 0) {
+                if (errno == EINTR) continue;
+                return false;
+            }
+            if (result == 0) return false;
+            sent += static_cast<size_t>(result);
+        }
+        return true;
+    };
+
+    if (sendAll(headerText.data(), headerText.size()) && !body.empty()) {
+        sendAll(body.data(), body.size());
     }
 }
 
@@ -212,15 +228,59 @@ bool parseTargetRoute(const std::string& path, int& targetId, std::string& resou
     return true;
 }
 
-void handleRequest(int clientFd, Database& db, SshCredentials& credentials, const std::string& webRoot) {
-    char buffer[8192] = {};
-    const ssize_t received = recv(clientFd, buffer, sizeof(buffer) - 1, 0);
-    if (received <= 0) {
+void handleRequest(int clientFd, Database& db, SshCredentials& credentials, MonitorSignal& monitorSignal, const std::string& webRoot) {
+    constexpr size_t maxRequestSize = 65536;
+    std::string request;
+    request.reserve(4096);
+    size_t expectedSize = 0;
+    char buffer[4096];
+    while (request.size() < maxRequestSize) {
+        const ssize_t received = recv(clientFd, buffer, sizeof(buffer), 0);
+        if (received < 0 && errno == EINTR) continue;
+        if (received <= 0) {
+            close(clientFd);
+            return;
+        }
+        request.append(buffer, static_cast<size_t>(received));
+
+        const auto headerEnd = request.find("\r\n\r\n");
+        if (headerEnd != std::string::npos && expectedSize == 0) {
+            size_t contentLength = 0;
+            std::istringstream headers(request.substr(0, headerEnd));
+            std::string headerLine;
+            std::getline(headers, headerLine);
+            while (std::getline(headers, headerLine)) {
+                if (!headerLine.empty() && headerLine.back() == '\r') headerLine.pop_back();
+                const auto colon = headerLine.find(':');
+                if (colon == std::string::npos) continue;
+                std::string headerName = headerLine.substr(0, colon);
+                std::transform(headerName.begin(), headerName.end(), headerName.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+                if (headerName == "content-length") {
+                    try {
+                        contentLength = static_cast<size_t>(std::stoul(headerLine.substr(colon + 1)));
+                    } catch (...) {
+                        sendResponse(clientFd, "400 Bad Request", "text/plain; charset=utf-8", "Invalid Content-Length");
+                        close(clientFd);
+                        return;
+                    }
+                }
+            }
+            expectedSize = headerEnd + 4 + contentLength;
+            if (expectedSize > maxRequestSize) {
+                sendResponse(clientFd, "413 Payload Too Large", "text/plain; charset=utf-8", "Request too large");
+                close(clientFd);
+                return;
+            }
+        }
+        if (expectedSize > 0 && request.size() >= expectedSize) break;
+    }
+
+    if (expectedSize == 0 || request.size() < expectedSize) {
+        sendResponse(clientFd, "400 Bad Request", "text/plain; charset=utf-8", "Incomplete request");
         close(clientFd);
         return;
     }
 
-    const std::string request(buffer, static_cast<size_t>(received));
     const auto lineEnd = request.find("\r\n");
     if (lineEnd == std::string::npos) {
         close(clientFd);
@@ -260,6 +320,7 @@ void handleRequest(int clientFd, Database& db, SshCredentials& credentials, cons
         const std::string ip = fields.count("ip") ? fields.at("ip") : "";
         const std::string username = fields.count("username") ? fields.at("username") : "root";
         const std::string services = fields.count("services") ? fields.at("services") : "";
+        const std::string password = fields.count("password") ? fields.at("password") : "";
         int port = 22;
         try {
             if (fields.count("port")) port = std::stoi(fields.at("port"));
@@ -284,7 +345,20 @@ void handleRequest(int clientFd, Database& db, SshCredentials& credentials, cons
             }
         }
         const bool ok = db.upsertTarget(name, ip, effectiveUsername, port, services);
-        if (ok && previousTargetId > 0 && connectionChanged) credentials.erase(previousTargetId);
+        if (ok) {
+            int targetId = previousTargetId;
+            if (targetId == 0) {
+                for (const auto& target : db.listTargets()) {
+                    if (target.ip == ip) {
+                        targetId = target.id;
+                        break;
+                    }
+                }
+            }
+            if (previousTargetId > 0 && connectionChanged) credentials.erase(previousTargetId);
+            if (targetId > 0 && !password.empty()) credentials.setPassword(targetId, password);
+            monitorSignal.notify();
+        }
         if (!ok) {
             sendResponse(clientFd, "500 Internal Server Error", "application/json; charset=utf-8", "{\"status\":\"error\"}");
             close(clientFd);
@@ -305,6 +379,7 @@ void handleRequest(int clientFd, Database& db, SshCredentials& credentials, cons
             const std::string ip = fields.count("ip") ? fields.at("ip") : "";
             const std::string username = fields.count("username") ? fields.at("username") : "root";
             const std::string services = fields.count("services") ? fields.at("services") : "";
+            const std::string password = fields.count("password") ? fields.at("password") : "";
             int port = 22;
             try {
                 if (fields.count("port")) port = std::stoi(fields.at("port"));
@@ -321,7 +396,11 @@ void handleRequest(int clientFd, Database& db, SshCredentials& credentials, cons
                 }
             }
             const bool ok = valid && db.updateTarget(targetId, name, ip, effectiveUsername, port, services);
-            if (ok && connectionChanged) credentials.erase(targetId);
+            if (ok) {
+                if (connectionChanged) credentials.erase(targetId);
+                if (!password.empty()) credentials.setPassword(targetId, password);
+                monitorSignal.notify();
+            }
             sendResponse(clientFd, ok ? "200 OK" : (valid ? "404 Not Found" : "400 Bad Request"), "application/json; charset=utf-8", ok ? "{\"status\":\"updated\"}" : "{\"status\":\"error\"}");
             close(clientFd);
             return;
@@ -333,7 +412,10 @@ void handleRequest(int clientFd, Database& db, SshCredentials& credentials, cons
             const auto fields = parseForm(readBody(request));
             const auto password = fields.find("password");
             const bool ok = exists && password != fields.end() && !password->second.empty();
-            if (ok) credentials.setPassword(targetId, password->second);
+            if (ok) {
+                credentials.setPassword(targetId, password->second);
+                monitorSignal.notify();
+            }
             sendResponse(clientFd, ok ? "200 OK" : "400 Bad Request", "application/json; charset=utf-8", ok ? "{\"status\":\"password_set\"}" : "{\"status\":\"invalid_password\"}");
             close(clientFd);
             return;
@@ -341,7 +423,10 @@ void handleRequest(int clientFd, Database& db, SshCredentials& credentials, cons
 
         if (method == "DELETE" && resource.empty()) {
             const bool ok = db.deleteTarget(targetId);
-            if (ok) credentials.erase(targetId);
+            if (ok) {
+                credentials.erase(targetId);
+                monitorSignal.notify();
+            }
             sendResponse(clientFd, ok ? "200 OK" : "404 Not Found", "application/json; charset=utf-8", ok ? "{\"status\":\"deleted\"}" : "{\"status\":\"not_found\"}");
             close(clientFd);
             return;
@@ -353,8 +438,8 @@ void handleRequest(int clientFd, Database& db, SshCredentials& credentials, cons
 }
 }  // namespace
 
-HttpServer::HttpServer(Database& db, SshCredentials& credentials, const std::string& host, int port, const std::string& webRoot)
-    : db_(db), credentials_(credentials), host_(host), port_(port), webRoot_(webRoot) {
+HttpServer::HttpServer(Database& db, SshCredentials& credentials, MonitorSignal& monitorSignal, const std::string& host, int port, const std::string& webRoot)
+    : db_(db), credentials_(credentials), monitorSignal_(monitorSignal), host_(host), port_(port), webRoot_(webRoot) {
 }
 
 HttpServer::~HttpServer() {
@@ -367,6 +452,34 @@ void HttpServer::stop() {
         shutdown(socketFd_, SHUT_RDWR);
         close(socketFd_);
         socketFd_ = -1;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(clientsMutex_);
+        stoppingWorkers_ = true;
+        while (!pendingClients_.empty()) {
+            close(pendingClients_.front());
+            pendingClients_.pop_front();
+        }
+    }
+    clientsReady_.notify_all();
+    for (auto& worker : workers_) {
+        if (worker.joinable()) worker.join();
+    }
+    workers_.clear();
+}
+
+void HttpServer::workerLoop() {
+    while (true) {
+        int clientFd = -1;
+        {
+            std::unique_lock<std::mutex> lock(clientsMutex_);
+            clientsReady_.wait(lock, [this] { return stoppingWorkers_ || !pendingClients_.empty(); });
+            if (stoppingWorkers_ && pendingClients_.empty()) return;
+            clientFd = pendingClients_.front();
+            pendingClients_.pop_front();
+        }
+        handleRequest(clientFd, db_, credentials_, monitorSignal_, webRoot_);
     }
 }
 
@@ -401,6 +514,12 @@ void HttpServer::run() {
     }
 
     running_ = true;
+    stoppingWorkers_ = false;
+    constexpr size_t workerCount = 4;
+    workers_.reserve(workerCount);
+    for (size_t index = 0; index < workerCount; ++index) {
+        workers_.emplace_back(&HttpServer::workerLoop, this);
+    }
     std::cout << "MonitoringLinux web interface listening on http://" << host_ << ":" << port_ << std::endl;
 
     while (running_) {
@@ -414,7 +533,23 @@ void HttpServer::run() {
             break;
         }
 
-        handleRequest(clientFd, db_, credentials_, webRoot_);
+        timeval timeout{2, 0};
+        setsockopt(clientFd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+        setsockopt(clientFd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
+        bool queued = false;
+        {
+            std::lock_guard<std::mutex> lock(clientsMutex_);
+            if (!stoppingWorkers_ && pendingClients_.size() < 64) {
+                pendingClients_.push_back(clientFd);
+                queued = true;
+            }
+        }
+        if (queued) {
+            clientsReady_.notify_one();
+        } else {
+            sendResponse(clientFd, "503 Service Unavailable", "text/plain; charset=utf-8", "Busy");
+            close(clientFd);
+        }
     }
 
     stop();
