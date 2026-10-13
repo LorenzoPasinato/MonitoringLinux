@@ -143,27 +143,58 @@ async function loadStatus() {
 const targetForm = document.getElementById('target-form');
 const targetMessage = document.getElementById('target-message');
 const deleteDialog = document.getElementById('delete-dialog');
-const terminalDialog = document.getElementById('terminal-dialog');
 const remoteActionDialog = document.getElementById('remote-action-dialog');
 let pendingDeleteTargetId = null;
-let activeTerminal = null;
-
-function closeTerminal() {
-  if (!activeTerminal) return;
-  activeTerminal.socket.close();
-  activeTerminal.terminal.dispose();
-  activeTerminal = null;
-}
+const terminalSessions = new Map();
+let nextTerminalId = 1;
 
 function openTerminal(target) {
-  if (activeTerminal) closeTerminal();
+  const terminalId = `terminal-${nextTerminalId++}`;
+  const dialog = document.createElement('dialog');
+  dialog.className = 'terminal-window';
+  dialog.setAttribute('aria-labelledby', `${terminalId}-title`);
 
-  const terminalHost = document.getElementById('terminal-host');
-  const terminalMessage = document.getElementById('terminal-message');
-  const terminalScreen = document.getElementById('terminal-screen');
-  terminalHost.textContent = `${target.name} · ${target.username}@${target.ip}:${target.port}`;
-  terminalMessage.textContent = 'Connecting over SSH...';
-  terminalDialog.showModal();
+  const header = document.createElement('header');
+  header.className = 'terminal-header';
+  const headingGroup = document.createElement('div');
+  const title = document.createElement('h2');
+  title.id = `${terminalId}-title`;
+  title.textContent = `${target.name} terminal`;
+  const hostLabel = document.createElement('p');
+  hostLabel.textContent = `${target.username}@${target.ip} port:${target.port}`;
+  headingGroup.append(title, hostLabel);
+
+  const windowActions = document.createElement('div');
+  windowActions.className = 'terminal-window-actions';
+  const minimizeButton = document.createElement('button');
+  minimizeButton.type = 'button';
+  minimizeButton.className = 'button-secondary window-control';
+  minimizeButton.setAttribute('aria-label', `Minimize ${target.name} terminal`);
+  minimizeButton.title = 'Minimize';
+  minimizeButton.textContent = '\u2212';
+  const closeButton = document.createElement('button');
+  closeButton.type = 'button';
+  closeButton.className = 'button-secondary window-control';
+  closeButton.setAttribute('aria-label', `Close ${target.name} terminal`);
+  closeButton.title = 'Close';
+  closeButton.textContent = '\u00d7';
+  windowActions.append(minimizeButton, closeButton);
+  header.append(headingGroup, windowActions);
+
+  const screen = document.createElement('div');
+  screen.className = 'terminal-screen';
+  screen.setAttribute('aria-label', `Interactive SSH terminal for ${target.name}`);
+  const message = document.createElement('p');
+  message.className = 'terminal-message';
+  message.setAttribute('role', 'status');
+  message.setAttribute('aria-live', 'polite');
+  message.textContent = 'Connecting over SSH...';
+  dialog.append(header, screen, message);
+  document.getElementById('terminal-windows').append(dialog);
+  dialog.show();
+  const offset = (terminalSessions.size % 5) * 28;
+  dialog.style.left = `${Math.max(8, window.innerWidth - dialog.offsetWidth - 24 - offset)}px`;
+  dialog.style.top = `${Math.max(8, 24 + offset)}px`;
 
   const terminal = new window.Terminal({
     cursorBlink: true,
@@ -173,24 +204,39 @@ function openTerminal(target) {
   });
   const fitAddon = new window.FitAddon.FitAddon();
   terminal.loadAddon(fitAddon);
-  terminal.open(terminalScreen);
+  terminal.open(screen);
   fitAddon.fit();
 
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
   const socket = new WebSocket(`${protocol}//${window.location.host}/api/targets/${target.id}/terminal`);
-  activeTerminal = { terminal, fitAddon, socket, targetId: target.id };
+  const restoreButton = document.createElement('button');
+  restoreButton.type = 'button';
+  restoreButton.className = 'button-secondary restore-terminal-button';
+  restoreButton.textContent = `${target.name} · ${target.ip}`;
+  restoreButton.title = `Restore ${target.name} terminal`;
+  restoreButton.hidden = true;
+  document.getElementById('terminal-taskbar').append(restoreButton);
+  const session = { terminalId, target, dialog, header, message, terminal, fitAddon, socket, restoreButton, minimized: false, closed: false };
+  terminalSessions.set(terminalId, session);
+  updateTerminalTaskbar();
+
+  const resizeObserver = new ResizeObserver(() => {
+    if (dialog.open) fitAddon.fit();
+  });
+  resizeObserver.observe(dialog);
+  session.resizeObserver = resizeObserver;
 
   socket.addEventListener('open', () => {
-    terminalMessage.textContent = 'Connected';
+    message.textContent = 'Connected';
     terminal.focus();
     socket.send(JSON.stringify({ type: 'resize', cols: terminal.cols, rows: terminal.rows }));
   });
   socket.addEventListener('message', (event) => terminal.write(event.data));
   socket.addEventListener('error', () => {
-    terminalMessage.textContent = 'SSH terminal connection failed';
+    message.textContent = 'SSH terminal connection failed';
   });
   socket.addEventListener('close', () => {
-    terminalMessage.textContent = 'SSH session closed';
+    message.textContent = 'SSH session closed';
   });
   terminal.onData((data) => {
     if (socket.readyState === WebSocket.OPEN) socket.send(data);
@@ -198,7 +244,88 @@ function openTerminal(target) {
   terminal.onResize(({ cols, rows }) => {
     if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'resize', cols, rows }));
   });
+
+  const closeSession = () => closeTerminal(terminalId);
+  closeButton.addEventListener('click', closeSession);
+  minimizeButton.addEventListener('click', () => minimizeTerminal(terminalId));
+  restoreButton.addEventListener('click', () => restoreTerminal(terminalId));
+  dialog.addEventListener('cancel', (event) => {
+    event.preventDefault();
+    closeSession();
+  });
+  dialog.addEventListener('close', () => {
+    if (!session.minimized && !session.closed) closeSession();
+  });
+  enableTerminalDragging(session);
   requestAnimationFrame(() => fitAddon.fit());
+}
+
+function updateTerminalTaskbar() {
+  const taskbar = document.getElementById('terminal-taskbar');
+  taskbar.hidden = ![...terminalSessions.values()].some((session) => session.minimized);
+}
+
+function minimizeTerminal(terminalId) {
+  const session = terminalSessions.get(terminalId);
+  if (!session || session.closed || session.minimized) return;
+  session.minimized = true;
+  session.dialog.close();
+  session.restoreButton.hidden = false;
+  updateTerminalTaskbar();
+}
+
+function restoreTerminal(terminalId) {
+  const session = terminalSessions.get(terminalId);
+  if (!session || session.closed || !session.minimized) return;
+  session.minimized = false;
+  session.restoreButton.hidden = true;
+  session.dialog.show();
+  requestAnimationFrame(() => {
+    session.fitAddon.fit();
+    session.terminal.focus();
+  });
+  updateTerminalTaskbar();
+}
+
+function closeTerminal(terminalId) {
+  const session = terminalSessions.get(terminalId);
+  if (!session || session.closed) return;
+  session.closed = true;
+  session.socket.close();
+  session.terminal.dispose();
+  session.resizeObserver?.disconnect();
+  session.restoreButton.remove();
+  if (session.dialog.open) session.dialog.close();
+  session.dialog.remove();
+  terminalSessions.delete(terminalId);
+  updateTerminalTaskbar();
+}
+
+function enableTerminalDragging(session) {
+  session.header.addEventListener('pointerdown', (event) => {
+    if (event.button !== 0 || event.target.closest('button') || !session.dialog.open) return;
+    const bounds = session.dialog.getBoundingClientRect();
+    const offsetX = event.clientX - bounds.left;
+    const offsetY = event.clientY - bounds.top;
+    session.header.setPointerCapture(event.pointerId);
+
+    const moveWindow = (moveEvent) => {
+      if (!session.header.hasPointerCapture(moveEvent.pointerId)) return;
+      const maxLeft = Math.max(0, window.innerWidth - session.dialog.offsetWidth);
+      const maxTop = Math.max(0, window.innerHeight - 48);
+      session.dialog.style.left = `${Math.max(0, Math.min(maxLeft, moveEvent.clientX - offsetX))}px`;
+      session.dialog.style.top = `${Math.max(0, Math.min(maxTop, moveEvent.clientY - offsetY))}px`;
+    };
+    const stopMoving = (upEvent) => {
+      if (session.header.hasPointerCapture(upEvent.pointerId)) session.header.releasePointerCapture(upEvent.pointerId);
+      session.header.removeEventListener('pointermove', moveWindow);
+      session.header.removeEventListener('pointerup', stopMoving);
+      session.header.removeEventListener('pointercancel', stopMoving);
+    };
+    session.header.addEventListener('pointermove', moveWindow);
+    session.header.addEventListener('pointerup', stopMoving);
+    session.header.addEventListener('pointercancel', stopMoving);
+  });
 }
 
 function resetTargetForm() {
@@ -253,9 +380,6 @@ targetForm?.addEventListener('submit', async (event) => {
 });
 
 document.getElementById('cancel-edit')?.addEventListener('click', resetTargetForm);
-document.getElementById('close-terminal')?.addEventListener('click', () => terminalDialog.close());
-terminalDialog?.addEventListener('close', closeTerminal);
-terminalDialog?.addEventListener('cancel', closeTerminal);
 
 async function executeRemoteAction(target, action, service) {
   const message = document.querySelector(`[data-machine-message="${target.id}"]`);

@@ -211,7 +211,7 @@ button.button-small {
 
 .machine-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 340px), 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px;
 }
 
@@ -410,21 +410,27 @@ button.button-icon.button-danger:hover {
   overflow-wrap: anywhere;
 }
 
-#terminal-dialog {
-  width: min(980px, calc(100vw - 32px));
-  max-width: 980px;
-  height: min(700px, calc(100vh - 32px));
-  max-height: 700px;
-  margin: auto;
+.terminal-window {
+  position: fixed;
+  inset: auto;
+  width: min(760px, calc(100vw - 32px));
+  min-width: min(360px, calc(100vw - 24px));
+  max-width: calc(100vw - 16px);
+  height: min(520px, calc(100vh - 32px));
+  min-height: 300px;
+  max-height: calc(100vh - 16px);
+  margin: 0;
   padding: 18px;
+  overflow: auto;
+  resize: both;
   border: 1px solid var(--line-strong);
   border-radius: 2px;
   background: var(--surface);
   color: var(--text);
 }
 
-#terminal-dialog::backdrop {
-  background: rgba(0, 0, 0, 0.82);
+.terminal-window::backdrop {
+  background: transparent;
 }
 
 .terminal-header {
@@ -433,6 +439,21 @@ button.button-icon.button-danger:hover {
   justify-content: space-between;
   gap: 12px;
   margin-bottom: 12px;
+  cursor: move;
+  user-select: none;
+}
+
+.terminal-window-actions {
+  display: flex;
+  gap: 6px;
+}
+
+button.window-control {
+  width: 30px;
+  min-width: 30px;
+  min-height: 30px;
+  padding: 0;
+  font-size: 1rem;
 }
 
 .terminal-header h2 {
@@ -446,7 +467,7 @@ button.button-icon.button-danger:hover {
   font-size: 0.78rem;
 }
 
-#terminal-screen {
+.terminal-screen {
   height: calc(100% - 68px);
   min-height: 240px;
   padding: 8px;
@@ -455,8 +476,34 @@ button.button-icon.button-danger:hover {
   background: #080a08;
 }
 
-#terminal-screen .xterm {
+.terminal-screen .xterm {
   height: 100%;
+}
+
+.terminal-taskbar {
+  position: fixed;
+  left: 16px;
+  bottom: 16px;
+  z-index: 20;
+  display: flex;
+  max-width: calc(100vw - 32px);
+  gap: 8px;
+  overflow-x: auto;
+  padding: 8px;
+  border: 1px solid var(--line-strong);
+  background: var(--surface);
+}
+
+.terminal-taskbar[hidden] {
+  display: none;
+}
+
+.restore-terminal-button {
+  flex: 0 0 auto;
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 @media (max-width: 700px) {
@@ -467,6 +514,10 @@ button.button-icon.button-danger:hover {
 
   .panel {
     margin-top: 22px;
+  }
+
+  .machine-grid {
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .machine-header {
@@ -494,7 +545,9 @@ button.button-icon.button-danger:hover {
     align-self: flex-start;
   }
 
-  #terminal-dialog {
+  .terminal-window {
+    min-width: min(320px, calc(100vw - 16px));
+    min-height: 260px;
     padding: 12px;
   }
 }

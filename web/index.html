@@ -70,17 +70,8 @@
       </div>
     </dialog>
 
-    <dialog id="terminal-dialog" aria-labelledby="terminal-title">
-      <header class="terminal-header">
-        <div>
-          <h2 id="terminal-title">Remote terminal</h2>
-          <p id="terminal-host"></p>
-        </div>
-        <button type="button" id="close-terminal" class="button-secondary" aria-label="Close terminal">Close</button>
-      </header>
-      <div id="terminal-screen" aria-label="Interactive SSH terminal"></div>
-      <p id="terminal-message" role="status" aria-live="polite"></p>
-    </dialog>
+    <div id="terminal-windows" aria-live="polite"></div>
+    <div id="terminal-taskbar" class="terminal-taskbar" aria-label="Minimized terminals" hidden></div>
     <dialog id="remote-action-dialog" aria-labelledby="remote-action-title" aria-describedby="remote-action-message">
       <h2 id="remote-action-title">Confirm remote action</h2>
       <p id="remote-action-message"></p>

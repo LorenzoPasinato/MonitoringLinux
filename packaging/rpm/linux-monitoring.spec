@@ -1,6 +1,6 @@
 Name: linux-monitoring
 Version: 1.0.0
-Release: 13%{?dist}
+Release: 15%{?dist}
 Summary: Standalone Linux monitoring dashboard for remote VM service checks
 License: MIT
 URL: https://example.com/monitoring-linux
@@ -35,6 +35,10 @@ ln -s /opt/monitoring-linux/monitoring-linux %{buildroot}%{_bindir}/monitoring-l
 %config(noreplace) %{_sysconfdir}/monitoring-linux/monitoring.conf
 
 %changelog
+* Tue Oct 13 2026 - Release 15
+- Support multiple independent SSH terminal windows and named minimized sessions
+* Tue Oct 13 2026 - Release 14
+- Limit monitored machine layout to two columns and add movable/resizable terminal window
 * Tue Oct 13 2026 - Release 13
 - Use a borderless trash icon for Delete and show SSH connection state per machine
 * Tue Oct 13 2026 - Release 12

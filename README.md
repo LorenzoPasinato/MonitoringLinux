@@ -75,7 +75,7 @@ The helper uses `/opt/monitoring-linux/rpmbuild` as its RPM build tree. On first
 2. Install it with:
 
 ```bash
-sudo dnf install -y ./linux-monitoring-1.0.0-13.el9.x86_64.rpm
+sudo dnf install -y ./linux-monitoring-1.0.0-15.el9.x86_64.rpm
 ```
 
 3. Ensure SSH access is configured to the remote Linux hosts, ideally with key-based authentication.
