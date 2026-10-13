@@ -17,11 +17,23 @@ namespace {
 struct Config {
     std::string host = "0.0.0.0";
     int port = 8080;
-    std::string dbPath = "/var/lib/monitoring-linux/monitoring.db";
-    std::string webRoot = "/usr/share/monitoring-linux";
+    std::string dbPath = "~/.local/share/monitoring-linux/monitoring.db";
+    std::string webRoot = "/opt/monitoring-linux/web";
     int sshPort = 22;
     int checkIntervalSeconds = 15;
 };
+
+std::string expandHomePath(const std::string& path) {
+    if (path != "~" && path.rfind("~/", 0) != 0) {
+        return path;
+    }
+
+    const char* home = std::getenv("HOME");
+    if (home == nullptr || *home == '\0') {
+        return {};
+    }
+    return std::string(home) + path.substr(1);
+}
 
 std::string trim(const std::string& value) {
     const auto start = value.find_first_not_of(" \t\r\n");
@@ -194,10 +206,26 @@ int main(int argc, char** argv) {
     }
 
     Config config = loadConfig(configPath);
+    if (config.dbPath == "/var/lib/monitoring-linux/monitoring.db") {
+        config.dbPath = "~/.local/share/monitoring-linux/monitoring.db";
+    }
+    if (config.webRoot == "/usr/share/monitoring-linux") {
+        config.webRoot = "/opt/monitoring-linux/web";
+    }
+    config.dbPath = expandHomePath(config.dbPath);
+    if (config.dbPath.empty()) {
+        std::cerr << "Unable to resolve database path: HOME is not set" << std::endl;
+        return 1;
+    }
+
     const std::filesystem::path dbParent = std::filesystem::path(config.dbPath).parent_path();
     if (!dbParent.empty()) {
         std::error_code ec;
         std::filesystem::create_directories(dbParent, ec);
+        if (ec) {
+            std::cerr << "Unable to create database directory: " << ec.message() << std::endl;
+            return 1;
+        }
     }
 
     Database db(config.dbPath);

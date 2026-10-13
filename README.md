@@ -22,12 +22,6 @@ cmake -S . -B build
 cmake --build build
 ```
 
-## Run
-
-```bash
-./build/monitoring-linux --config /etc/monitoring-linux/monitoring.conf
-```
-
 ## Web UI
 
 Open the browser on the same machine:
@@ -58,7 +52,7 @@ This project is intentionally designed as a manual-start application:
 Install the build prerequisites on the build machine:
 
 ```bash
-sudo dnf install -y rpm-build rpmdevtools gcc-c++ cmake sqlite-devel
+sudo dnf install -y rpm-build rpmdevtools gcc-c++ cmake
 ```
 
 Then build the package:
@@ -67,10 +61,10 @@ Then build the package:
 bash packaging/rpm/build-rpm.sh
 ```
 
-The generated RPM will be in the standard RPM output tree, usually:
+The helper uses `/opt/monitoring-linux/rpmbuild` as its RPM build tree. On first use it prepares that directory for the current user; the actual RPM build runs without root privileges. The generated RPM will be under:
 
 ```text
-~/rpmbuild/RPMS/x86_64/
+/opt/monitoring-linux/rpmbuild/RPMS/x86_64/
 ```
 
 ## Standalone installation checklist
@@ -79,14 +73,14 @@ The generated RPM will be in the standard RPM output tree, usually:
 2. Install it with:
 
 ```bash
-rpm -Uvh ./linux-monitoring-1.0.0-1.el9.x86_64.rpm
+sudo dnf install -y ./linux-monitoring-1.0.0-3.el9.x86_64.rpm
 ```
 
 3. Ensure SSH access is configured to the remote Linux hosts, ideally with key-based authentication.
-4. Launch the app manually from the command line:
+4. Launch the app manually as your regular user:
 
 ```bash
-/usr/sbin/monitoring-linux --config /etc/monitoring-linux/monitoring.conf
+monitoring-linux
 ```
 
 5. Open the local dashboard in the browser:
@@ -97,10 +91,10 @@ http://localhost:8080/
 
 ## Default configuration
 
-The default configuration is placed in:
+The RPM installs the application files in `/opt/monitoring-linux` and the command link in `/usr/bin/monitoring-linux`. The default configuration is placed in:
 
 ```text
 /etc/monitoring-linux/monitoring.conf
 ```
 
-and contains the local port, local SQLite path and the SSH-related settings used by the monitor.
+and contains the local port and SSH settings. SQLite is compiled into the application binary, so the target machine does not need the SQLite runtime package or command-line tool. SQLite data is stored in `~/.local/share/monitoring-linux/monitoring.db` for the user who starts the application, so it can run without root privileges.

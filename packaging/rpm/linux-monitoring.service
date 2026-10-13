@@ -5,8 +5,8 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/sbin/monitoring-linux --config /etc/monitoring-linux/monitoring.conf
-WorkingDirectory=/var/lib/monitoring-linux
+ExecStart=/usr/bin/monitoring-linux --config /etc/monitoring-linux/monitoring.conf
+WorkingDirectory=/opt/monitoring-linux
 Restart=on-failure
 RestartSec=5
 
