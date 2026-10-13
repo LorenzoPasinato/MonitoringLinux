@@ -123,7 +123,7 @@ bool Database::initialize() {
 
 std::vector<RemoteTarget> Database::listTargets() const {
     std::vector<RemoteTarget> targets;
-    auto* db = reinterpret_cast<const sqlite3*>(db_);
+    auto* db = reinterpret_cast<sqlite3*>(db_);
     if (db == nullptr) {
         return targets;
     }
@@ -254,7 +254,7 @@ bool Database::saveCheckResult(const ServiceCheckResult& result) {
 
 std::vector<ServiceCheckResult> Database::getLatestChecks() const {
     std::vector<ServiceCheckResult> results;
-    auto* db = reinterpret_cast<const sqlite3*>(db_);
+    auto* db = reinterpret_cast<sqlite3*>(db_);
     if (db == nullptr) {
         return results;
     }
