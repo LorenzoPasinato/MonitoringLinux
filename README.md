@@ -48,7 +48,7 @@ ssh-copy-id root@10.0.0.22
 
 ## RPM packaging on Red Hat 9 / AlmaLinux
 
-The RPM spec is available in `packagin/rpm/linux-monitoring.spec`.
+The RPM spec is available in `packaging/rpm/linux-monitoring.spec`.
 
 This project is intentionally designed as a manual-start application:
 - no automatic systemd activation
@@ -64,13 +64,13 @@ dnf install -y rpm-build rpmdevtools gcc-c++ cmake sqlite-devel
 Then build the package:
 
 ```bash
-./packagin/rpm/build-rpm.sh
+./packaging/rpm/build-rpm.sh
 ```
 
 or directly:
 
 ```bash
-rpmbuild -bb packagin/rpm/linux-monitoring.spec
+rpmbuild -bb packaging/rpm/linux-monitoring.spec
 ```
 
 The generated RPM will be in the standard RPM output tree, usually:
