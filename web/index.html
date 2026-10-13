@@ -1,1 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>MonitoringLinux</title>
+    <link rel="stylesheet" href="/css/style.css" />
+  </head>
+  <body>
+    <div class="container">
+      <header>
+        <h1>MonitoringLinux</h1>
+        <p>Remote Linux service monitor</p>
+      </header>
+
+      <section class="panel">
+        <h2>Add target VM</h2>
+        <form id="target-form">
+          <div class="row">
+            <label>
+              IP address
+              <input type="text" id="ip" placeholder="10.0.0.22" required />
+            </label>
+            <label>
+              SSH user
+              <input type="text" id="username" value="root" required />
+            </label>
+            <label>
+              SSH port
+              <input type="number" id="port" value="22" min="1" max="65535" />
+            </label>
+          </div>
+          <div class="row">
+            <label class="full-width">
+              Services to monitor
+              <input type="text" id="services" placeholder="sshd,nginx,httpd" required />
+            </label>
+          </div>
+          <button type="submit">Save target</button>
+        </form>
+      </section>
+
+      <section class="panel">
+        <h2>Monitored hosts</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Host</th>
+              <th>User</th>
+              <th>Services</th>
+              <th>Last status</th>
+              <th>Last check</th>
+            </tr>
+          </thead>
+          <tbody id="targets-body"></tbody>
+        </table>
+      </section>
+
+      <section class="panel">
+        <h2>Service status</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Host</th>
+              <th>Service</th>
+              <th>Status</th>
+              <th>Checked at</th>
+            </tr>
+          </thead>
+          <tbody id="checks-body"></tbody>
+        </table>
+      </section>
+    </div>
+
+    <script src="/js/app.js"></script>
+  </body>
+</html>
 
