@@ -18,14 +18,12 @@ The application is intended to be launched manually from the command line and do
 %autosetup
 
 %build
-cmake -S . -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo
+cmake -S . -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_INSTALL_SYSCONFDIR=%{_sysconfdir}
 cmake --build build
 
 %install
 rm -rf %{buildroot}
-cmake --install build --prefix %{_prefix}
-install -d %{buildroot}%{_sysconfdir}/monitoring-linux
-install -m 0644 config/monitoring.conf %{buildroot}%{_sysconfdir}/monitoring-linux/monitoring.conf
+DESTDIR=%{buildroot} cmake --install build --prefix %{_prefix}
 
 %files
 %{_sbindir}/monitoring-linux

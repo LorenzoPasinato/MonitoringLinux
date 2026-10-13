@@ -58,19 +58,13 @@ This project is intentionally designed as a manual-start application:
 Install the build prerequisites on the build machine:
 
 ```bash
-dnf install -y rpm-build rpmdevtools gcc-c++ cmake sqlite-devel
+sudo dnf install -y rpm-build rpmdevtools gcc-c++ cmake sqlite-devel
 ```
 
 Then build the package:
 
 ```bash
-./packaging/rpm/build-rpm.sh
-```
-
-or directly:
-
-```bash
-rpmbuild -bb packaging/rpm/linux-monitoring.spec
+bash packaging/rpm/build-rpm.sh
 ```
 
 The generated RPM will be in the standard RPM output tree, usually:
