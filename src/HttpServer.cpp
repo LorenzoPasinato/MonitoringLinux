@@ -268,16 +268,22 @@ bool targetHasService(const RemoteTarget& target, const std::string& serviceName
     return false;
 }
 
-int runRemoteAction(const RemoteTarget& target, const std::string& command, const std::string& password, std::string& output) {
+int runRemoteAction(const RemoteTarget& target, const std::string& command, const std::string& sshPassword, const std::string& sudoPassword, std::string& output) {
     int outputPipe[2];
+    int inputSocket[2];
     if (pipe(outputPipe) != 0) return -1;
+    if (socketpair(AF_UNIX, SOCK_STREAM, 0, inputSocket) != 0) {
+        close(outputPipe[0]);
+        close(outputPipe[1]);
+        return -1;
+    }
 
     std::vector<std::string> arguments = {
-        "ssh", "-o", password.empty() ? "BatchMode=yes" : "BatchMode=no",
+        "ssh", "-o", sshPassword.empty() ? "BatchMode=yes" : "BatchMode=no",
         "-o", "StrictHostKeyChecking=accept-new", "-o", "ConnectTimeout=8",
         "-o", "NumberOfPasswordPrompts=1"
     };
-    if (!password.empty()) arguments.insert(arguments.end(), {"-o", "PreferredAuthentications=publickey,password,keyboard-interactive"});
+    if (!sshPassword.empty()) arguments.insert(arguments.end(), {"-o", "PreferredAuthentications=publickey,password,keyboard-interactive"});
     arguments.insert(arguments.end(), {"-p", std::to_string(target.port), "-l", target.username, "--", target.ip, command});
 
     std::vector<char*> argumentPointers;
@@ -291,11 +297,11 @@ int runRemoteAction(const RemoteTarget& target, const std::string& command, cons
             variable.rfind("DISPLAY=", 0) == 0 || variable.rfind("MONITORING_SSH_PASSWORD=", 0) == 0) continue;
         environment.push_back(variable);
     }
-    if (!password.empty()) {
+    if (!sshPassword.empty()) {
         environment.emplace_back("SSH_ASKPASS=/opt/monitoring-linux/monitoring-linux-ssh-askpass");
         environment.emplace_back("SSH_ASKPASS_REQUIRE=force");
         environment.emplace_back("DISPLAY=monitoring-linux:0");
-        environment.emplace_back("MONITORING_SSH_PASSWORD=" + password);
+        environment.emplace_back("MONITORING_SSH_PASSWORD=" + sshPassword);
     }
     std::vector<char*> environmentPointers;
     for (auto& variable : environment) environmentPointers.push_back(variable.data());
@@ -311,11 +317,15 @@ int runRemoteAction(const RemoteTarget& target, const std::string& command, cons
                              posix_spawn_file_actions_adddup2(&actions, outputPipe[1], STDERR_FILENO) ||
                              posix_spawn_file_actions_addclose(&actions, outputPipe[0]) ||
                              posix_spawn_file_actions_addclose(&actions, outputPipe[1]) ||
-                             posix_spawn_file_actions_addopen(&actions, STDIN_FILENO, "/dev/null", O_RDONLY, 0);
+                             posix_spawn_file_actions_adddup2(&actions, inputSocket[1], STDIN_FILENO) ||
+                             posix_spawn_file_actions_addclose(&actions, inputSocket[0]) ||
+                             posix_spawn_file_actions_addclose(&actions, inputSocket[1]);
     if (actionResult != 0) {
         posix_spawn_file_actions_destroy(&actions);
         close(outputPipe[0]);
         close(outputPipe[1]);
+        close(inputSocket[0]);
+        close(inputSocket[1]);
         return -1;
     }
 
@@ -323,10 +333,38 @@ int runRemoteAction(const RemoteTarget& target, const std::string& command, cons
     const int spawnResult = posix_spawnp(&child, "ssh", &actions, nullptr, argumentPointers.data(), environmentPointers.data());
     posix_spawn_file_actions_destroy(&actions);
     close(outputPipe[1]);
+    close(inputSocket[1]);
     if (spawnResult != 0) {
         close(outputPipe[0]);
+        close(inputSocket[0]);
         return -1;
     }
+
+    std::string sudoInput = sudoPassword.empty() ? std::string{} : sudoPassword + "\n";
+    size_t sent = 0;
+    while (sent < sudoInput.size()) {
+        const ssize_t count = send(inputSocket[0], sudoInput.data() + sent, sudoInput.size() - sent, MSG_NOSIGNAL);
+        if (count < 0) {
+            if (errno == EINTR) continue;
+            kill(child, SIGTERM);
+            waitpid(child, nullptr, 0);
+            close(inputSocket[0]);
+            close(outputPipe[0]);
+            return -1;
+        }
+        if (count == 0) {
+            kill(child, SIGTERM);
+            waitpid(child, nullptr, 0);
+            close(inputSocket[0]);
+            close(outputPipe[0]);
+            return -1;
+        }
+        sent += static_cast<size_t>(count);
+    }
+    volatile char* sudoInputData = sudoInput.empty() ? nullptr : sudoInput.data();
+    for (size_t index = 0; index < sudoInput.size(); ++index) sudoInputData[index] = '\0';
+    shutdown(inputSocket[0], SHUT_WR);
+    close(inputSocket[0]);
 
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
     bool pipeOpen = true;
@@ -747,6 +785,7 @@ void handleRequest(int clientFd, Database& db, SshCredentials& credentials, Moni
         const std::string username = fields.count("username") ? fields.at("username") : "root";
         const std::string services = fields.count("services") ? fields.at("services") : "";
         const std::string password = fields.count("password") ? fields.at("password") : "";
+        const std::string sudoPassword = fields.count("sudo_password") ? fields.at("sudo_password") : "";
         int port = 22;
         try {
             if (fields.count("port")) port = std::stoi(fields.at("port"));
@@ -783,6 +822,7 @@ void handleRequest(int clientFd, Database& db, SshCredentials& credentials, Moni
             }
             if (previousTargetId > 0 && connectionChanged) credentials.erase(previousTargetId);
             if (targetId > 0 && !password.empty()) credentials.setPassword(targetId, password);
+            if (targetId > 0 && !sudoPassword.empty()) credentials.setSudoPassword(targetId, sudoPassword);
             monitorSignal.notify();
         }
         if (!ok) {
@@ -825,6 +865,7 @@ void handleRequest(int clientFd, Database& db, SshCredentials& credentials, Moni
                 return;
             }
 
+            const std::string sudoPassword = credentials.sudoPasswordFor(targetId);
             std::string remoteCommand;
             if (action == "restart-service" || action == "stop-service") {
                 if (!targetHasService(*found, service)) {
@@ -833,11 +874,14 @@ void handleRequest(int clientFd, Database& db, SshCredentials& credentials, Moni
                     return;
                 }
                 const std::string operation = action == "restart-service" ? "restart" : "stop";
-                remoteCommand = "systemctl " + operation + " " + shellQuote(service);
+                remoteCommand = std::string(sudoPassword.empty() ? "sudo -n -- systemctl " : "sudo -S -p '' -- systemctl ") +
+                                operation + " " + shellQuote(service);
             } else if (action == "reboot") {
-                remoteCommand = "systemctl reboot --no-block";
+                remoteCommand = sudoPassword.empty() ? "sudo -n -- systemctl reboot --no-block" :
+                                                       "sudo -S -p '' -- systemctl reboot --no-block";
             } else if (action == "poweroff") {
-                remoteCommand = "systemctl poweroff --no-block";
+                remoteCommand = sudoPassword.empty() ? "sudo -n -- systemctl poweroff --no-block" :
+                                                       "sudo -S -p '' -- systemctl poweroff --no-block";
             } else {
                 sendResponse(clientFd, "400 Bad Request", "application/json; charset=utf-8", "{\"status\":\"invalid_action\"}");
                 close(clientFd);
@@ -847,7 +891,7 @@ void handleRequest(int clientFd, Database& db, SshCredentials& credentials, Moni
             const RemoteTarget target = *found;
             const std::string password = credentials.passwordFor(targetId);
             std::string output;
-            const int exitCode = runRemoteAction(target, remoteCommand, password, output);
+            const int exitCode = runRemoteAction(target, remoteCommand, password, sudoPassword, output);
             const bool ok = exitCode == 0;
             if (ok && (action == "restart-service" || action == "stop-service")) monitorSignal.notify();
             std::ostringstream response;
@@ -865,6 +909,7 @@ void handleRequest(int clientFd, Database& db, SshCredentials& credentials, Moni
             const std::string username = fields.count("username") ? fields.at("username") : "root";
             const std::string services = fields.count("services") ? fields.at("services") : "";
             const std::string password = fields.count("password") ? fields.at("password") : "";
+            const std::string sudoPassword = fields.count("sudo_password") ? fields.at("sudo_password") : "";
             int port = 22;
             try {
                 if (fields.count("port")) port = std::stoi(fields.at("port"));
@@ -884,6 +929,7 @@ void handleRequest(int clientFd, Database& db, SshCredentials& credentials, Moni
             if (ok) {
                 if (connectionChanged) credentials.erase(targetId);
                 if (!password.empty()) credentials.setPassword(targetId, password);
+                if (!sudoPassword.empty()) credentials.setSudoPassword(targetId, sudoPassword);
                 monitorSignal.notify();
             }
             sendResponse(clientFd, ok ? "200 OK" : (valid ? "404 Not Found" : "400 Bad Request"), "application/json; charset=utf-8", ok ? "{\"status\":\"updated\"}" : "{\"status\":\"error\"}");
@@ -1039,4 +1085,3 @@ void HttpServer::run() {
 
     stop();
 }
-

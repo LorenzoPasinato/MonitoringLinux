@@ -42,6 +42,8 @@ Example:
 ssh-copy-id root@10.0.0.22
 ```
 
+Remote service actions (restart/stop, reboot, and shutdown) run through `sudo`. Enter the remote account's sudo password in the **Sudo password** field when adding or editing a machine. This is separate from the SSH password. Both are kept only in memory while the application is running and are not stored in SQLite. If no sudo password is entered, the application tries `sudo -n` (passwordless sudo). The remote account must already be allowed to run `sudo`; the application cannot grant privileges or bypass the remote host's sudo policy.
+
 ## RPM packaging on Red Hat 9 / AlmaLinux
 
 The RPM spec is available in `packaging/rpm/linux-monitoring.spec`.

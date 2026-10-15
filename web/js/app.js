@@ -334,6 +334,7 @@ function resetTargetForm() {
   document.getElementById('username').value = 'root';
   document.getElementById('port').value = '22';
   document.getElementById('password').placeholder = 'Optional; kept only while the app runs';
+  document.getElementById('sudo-password').placeholder = 'Optional; kept only while the app runs';
   document.getElementById('target-form-title').textContent = 'Add target VM';
   document.getElementById('save-target').textContent = 'Save target';
   document.getElementById('cancel-edit').hidden = true;
@@ -347,6 +348,7 @@ targetForm?.addEventListener('submit', async (event) => {
   const username = document.getElementById('username').value.trim();
   const port = document.getElementById('port').value || '22';
   const password = document.getElementById('password').value;
+  const sudoPassword = document.getElementById('sudo-password').value;
   const services = document.getElementById('services').value.trim();
 
   if (!ip || !services) {
@@ -361,6 +363,7 @@ targetForm?.addEventListener('submit', async (event) => {
     services
   });
   if (password) formData.set('password', password);
+  if (sudoPassword) formData.set('sudo_password', sudoPassword);
 
   try {
     const targetId = targetForm.dataset.targetId;
@@ -485,6 +488,8 @@ document.getElementById('machines-list')?.addEventListener('click', async (event
     document.getElementById('services').value = target.services;
     document.getElementById('password').value = '';
     document.getElementById('password').placeholder = 'Leave blank to keep current password';
+    document.getElementById('sudo-password').value = '';
+    document.getElementById('sudo-password').placeholder = 'Leave blank to keep current password';
     document.getElementById('target-form-title').textContent = `Edit ${target.name}`;
     document.getElementById('save-target').textContent = 'Save changes';
     document.getElementById('cancel-edit').hidden = false;
@@ -525,4 +530,3 @@ document.getElementById('machines-list')?.addEventListener('submit', async (even
 
 setInterval(loadStatus, 2500);
 loadStatus();
-
