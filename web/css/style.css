@@ -322,6 +322,63 @@ button.button-icon.button-danger:hover {
   justify-content: flex-end;
 }
 
+.memory-monitor {
+  margin: 0 0 14px;
+  padding: 10px 0;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+
+.memory-summary {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 7px;
+}
+
+.memory-summary h4 {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 500;
+}
+
+.memory-summary span {
+  color: var(--text);
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-align: right;
+}
+
+.memory-meter {
+  height: 8px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  background: #111511;
+}
+
+.memory-meter-fill {
+  height: 100%;
+  background: var(--green);
+  transition: width 250ms ease;
+}
+
+.memory-meter-fill.is-warning {
+  background: var(--amber);
+}
+
+.memory-meter-fill.is-critical {
+  background: var(--red);
+}
+
+.memory-meta {
+  margin: 5px 0 0;
+  color: var(--muted);
+  font-size: 0.68rem;
+  text-align: right;
+}
+
 .machine-actions {
   margin-top: 10px;
   padding-top: 10px;

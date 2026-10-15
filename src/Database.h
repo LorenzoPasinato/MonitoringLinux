@@ -3,6 +3,14 @@
 #include <string>
 #include <mutex>
 #include <vector>
+#include <cstdint>
+
+struct MemoryUsage {
+    bool available = false;
+    int64_t usedKb = 0;
+    int64_t totalKb = 0;
+    std::string checkedAt;
+};
 
 struct RemoteTarget {
     int id = 0;
@@ -13,6 +21,7 @@ struct RemoteTarget {
     std::string services;
     std::string lastStatus;
     std::string lastCheckedAt;
+    MemoryUsage memory;
 };
 
 struct ServiceCheckResult {
@@ -37,6 +46,7 @@ public:
     bool upsertTarget(const std::string& name, const std::string& ip, const std::string& username, int port, const std::string& services);
     bool updateTarget(int id, const std::string& name, const std::string& ip, const std::string& username, int port, const std::string& services);
     bool deleteTarget(int id);
+    bool updateTargetMemory(int id, const MemoryUsage& memory);
     std::vector<ServiceCheckResult> getLatestChecks() const;
     bool saveCheckResult(const ServiceCheckResult& result);
     bool saveCheckResults(const std::vector<ServiceCheckResult>& results);
@@ -46,4 +56,3 @@ private:
     void* db_ = nullptr;
     mutable std::mutex mutex_;
 };
-

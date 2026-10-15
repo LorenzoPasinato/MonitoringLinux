@@ -221,11 +221,12 @@ int runSsh(const RemoteTarget& target, const std::string& remoteCommand, const s
     return WIFEXITED(childStatus) ? WEXITSTATUS(childStatus) : 255;
 }
 
-std::vector<ServiceCheckResult> probeRemoteServices(const RemoteTarget& target, const std::vector<std::string>& serviceNames, const std::string& password) {
+std::vector<ServiceCheckResult> probeRemoteServices(const RemoteTarget& target, const std::vector<std::string>& serviceNames, const std::string& password, MemoryUsage& memory) {
     std::vector<ServiceCheckResult> results;
-    if (serviceNames.empty()) return results;
 
     const std::string checkedAt = nowIso();
+    memory = {};
+    memory.checkedAt = checkedAt;
     for (const auto& serviceName : serviceNames) {
         ServiceCheckResult result;
         result.name = target.name;
@@ -242,8 +243,32 @@ std::vector<ServiceCheckResult> probeRemoteServices(const RemoteTarget& target, 
         remoteCommand += "systemctl is-active --quiet " + quoteRemoteArgument(serviceNames[index]) +
                          "; check_status=$?; printf '\\n__MONITORING_RESULT__" + std::to_string(index) + ":%s\\n' \"$check_status\"; ";
     }
+    remoteCommand += "awk '/^MemTotal:/ { total=$2; have_total=1 } /^MemAvailable:/ { available=$2; have_available=1 } END { if (have_total && have_available && total > 0 && available >= 0 && available <= total) printf \"\\n__MONITORING_MEMORY__:%.0f:%.0f\\n\", total-available, total; }' /proc/meminfo";
     std::string output;
     const int exitCode = runSsh(target, remoteCommand, password, output);
+
+    const std::string memoryMarker = "__MONITORING_MEMORY__:";
+    const size_t memoryPosition = output.find(memoryMarker);
+    if (memoryPosition != std::string::npos) {
+        const size_t lineEnd = output.find_first_of("\r\n", memoryPosition);
+        const std::string memoryLine = output.substr(memoryPosition + memoryMarker.size(), lineEnd - memoryPosition - memoryMarker.size());
+        const size_t separator = memoryLine.find(':');
+        if (separator != std::string::npos) {
+            try {
+                size_t usedLength = 0;
+                size_t totalLength = 0;
+                const int64_t usedKb = std::stoll(memoryLine.substr(0, separator), &usedLength);
+                const int64_t totalKb = std::stoll(memoryLine.substr(separator + 1), &totalLength);
+                if (usedLength == separator && totalLength == memoryLine.size() - separator - 1 &&
+                    usedKb >= 0 && totalKb > 0 && usedKb <= totalKb) {
+                    memory.available = true;
+                    memory.usedKb = usedKb;
+                    memory.totalKb = totalKb;
+                }
+            } catch (const std::exception&) {
+            }
+        }
+    }
 
     const std::string marker = "__MONITORING_RESULT__";
     size_t position = 0;
@@ -292,8 +317,10 @@ void monitorLoop(Database& db, SshCredentials& credentials, MonitorSignal& monit
                     const size_t index = nextTarget.fetch_add(1);
                     if (index >= targets.size()) break;
                     const auto services = splitCsv(targets[index].services);
-                    const auto checks = probeRemoteServices(targets[index], services, credentials.passwordFor(targets[index].id));
-                    db.saveCheckResults(checks);
+                    MemoryUsage memory;
+                    const auto checks = probeRemoteServices(targets[index], services, credentials.passwordFor(targets[index].id), memory);
+                    if (!checks.empty()) db.saveCheckResults(checks);
+                    db.updateTargetMemory(targets[index].id, memory);
                 }
             });
         }
@@ -390,4 +417,3 @@ int main(int argc, char** argv) {
 
     return 0;
 }
-

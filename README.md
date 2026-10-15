@@ -10,12 +10,15 @@ Install the RPM on a single Red Hat 9 / AlmaLinux machine, launch the binary fro
 
 - local web dashboard served on localhost
 - SSH-based checks against remote Linux VMs
+- per-machine memory usage monitoring with a live usage bar in the dashboard
 - named machines with editable connection details and removal
 - optional SSH password prompt after key authentication fails
 - monitoring of service names such as sshd, nginx, httpd, postgresql, etc.
 - persistent configuration in SQLite
 - no external web service required
 - portable RPM package intended for LAN-only monitoring
+
+The dashboard samples remote memory during the same SSH check used for services. It displays used/total RAM based on `/proc/meminfo` (`MemTotal - MemAvailable`) and refreshes it at the configured check interval; memory samples are stored with each target in SQLite.
 
 ## Build
 

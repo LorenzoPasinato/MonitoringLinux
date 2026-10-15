@@ -99,7 +99,15 @@ std::string buildTargetsJson(const std::vector<RemoteTarget>& targets) {
              << ",\"port\":" << t.port
              << ",\"services\":\"" << jsonEscape(t.services) << "\""
              << ",\"last_status\":\"" << jsonEscape(t.lastStatus) << "\""
-             << ",\"last_checked_at\":\"" << jsonEscape(t.lastCheckedAt) << "\"" << "}";
+             << ",\"last_checked_at\":\"" << jsonEscape(t.lastCheckedAt) << "\""
+             << ",\"memory_available\":" << (t.memory.available ? "true" : "false")
+             << ",\"memory_used_kb\":";
+        if (t.memory.available) json << t.memory.usedKb;
+        else json << "null";
+        json << ",\"memory_total_kb\":";
+        if (t.memory.available) json << t.memory.totalKb;
+        else json << "null";
+        json << ",\"memory_checked_at\":\"" << jsonEscape(t.memory.checkedAt) << "\"}";
         if (i + 1 < targets.size()) {
             json << ",";
         }

@@ -20,6 +20,11 @@ function escapeHtml(value) {
   })[character]);
 }
 
+function formatMemory(kilobytes) {
+  const gibibytes = kilobytes / (1024 * 1024);
+  return gibibytes >= 1 ? `${gibibytes.toFixed(1)} GiB` : `${(kilobytes / 1024).toFixed(0)} MiB`;
+}
+
 function renderMachines(targets, checks) {
   const machineList = document.getElementById('machines-list');
   if (!machineList) return;
@@ -66,6 +71,16 @@ function renderMachines(targets, checks) {
       disconnected: 'No connection',
       pending: 'Checking connection'
     }[connectionState];
+    const memoryAvailable = target.memory_available &&
+      Number.isFinite(target.memory_used_kb) && Number.isFinite(target.memory_total_kb) &&
+      target.memory_total_kb > 0 && target.memory_used_kb >= 0;
+    const memoryPercent = memoryAvailable
+      ? Math.min(100, Math.round(target.memory_used_kb / target.memory_total_kb * 1000) / 10)
+      : 0;
+    const memoryFillClass = memoryPercent >= 90 ? ' is-critical' : (memoryPercent >= 80 ? ' is-warning' : '');
+    const memoryText = memoryAvailable
+      ? `${formatMemory(target.memory_used_kb)} / ${formatMemory(target.memory_total_kb)} · ${memoryPercent.toFixed(1)}%`
+      : (target.memory_checked_at ? 'Memory data unavailable' : 'Waiting for first memory sample');
 
     return `
       <article class="machine-card">
@@ -89,6 +104,16 @@ function renderMachines(targets, checks) {
             <button type="button" class="button-danger button-small" data-action="poweroff" data-target-id="${target.id}">Shutdown</button>
           </div>
         </header>
+        <section class="memory-monitor" aria-label="Memory usage">
+          <div class="memory-summary">
+            <h4>Memory</h4>
+            <span>${escapeHtml(memoryText)}</span>
+          </div>
+          <div class="memory-meter" role="progressbar" aria-label="Memory usage" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${memoryPercent}" aria-valuetext="${escapeHtml(memoryText)}">
+            <div class="memory-meter-fill${memoryFillClass}" style="width: ${memoryPercent}%"></div>
+          </div>
+          <p class="memory-meta">${target.memory_checked_at ? `Updated ${escapeHtml(target.memory_checked_at)}` : 'Updated when the first SSH check completes'}</p>
+        </section>
         <div class="machine-services">
           <h4>Services</h4>
           ${services || '<p class="muted">No services configured</p>'}

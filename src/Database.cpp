@@ -106,7 +106,10 @@ bool Database::initialize() {
             port INTEGER NOT NULL,
             services TEXT NOT NULL,
             last_status TEXT,
-            last_checked_at TEXT
+            last_checked_at TEXT,
+            memory_used_kb INTEGER,
+            memory_total_kb INTEGER,
+            memory_checked_at TEXT
         );
 
         CREATE TABLE IF NOT EXISTS checks (
@@ -136,15 +139,21 @@ bool Database::initialize() {
     }
 
     bool hasNameColumn = false;
+    bool hasMemoryUsedColumn = false;
+    bool hasMemoryTotalColumn = false;
+    bool hasMemoryCheckedColumn = false;
     sqlite3_stmt* columns = nullptr;
     if (sqlite3_prepare_v2(db, "PRAGMA table_info(targets);", -1, &columns, nullptr) != SQLITE_OK) {
         return false;
     }
     while (sqlite3_step(columns) == SQLITE_ROW) {
         const auto* columnName = sqlite3_column_text(columns, 1);
-        if (columnName && std::string(reinterpret_cast<const char*>(columnName)) == "name") {
-            hasNameColumn = true;
-            break;
+        if (columnName) {
+            const std::string name(reinterpret_cast<const char*>(columnName));
+            if (name == "name") hasNameColumn = true;
+            else if (name == "memory_used_kb") hasMemoryUsedColumn = true;
+            else if (name == "memory_total_kb") hasMemoryTotalColumn = true;
+            else if (name == "memory_checked_at") hasMemoryCheckedColumn = true;
         }
     }
     sqlite3_finalize(columns);
@@ -157,6 +166,18 @@ bool Database::initialize() {
             return false;
         }
     }
+
+    const auto addMemoryColumn = [db](bool present, const char* sql, const char* description) {
+        if (present) return true;
+        char* error = nullptr;
+        if (sqlite3_exec(db, sql, nullptr, nullptr, &error) == SQLITE_OK) return true;
+        std::cerr << "Failed to add " << description << ": " << (error ? error : sqlite3_errmsg(db)) << std::endl;
+        sqlite3_free(error);
+        return false;
+    };
+    if (!addMemoryColumn(hasMemoryUsedColumn, "ALTER TABLE targets ADD COLUMN memory_used_kb INTEGER;", "memory usage")) return false;
+    if (!addMemoryColumn(hasMemoryTotalColumn, "ALTER TABLE targets ADD COLUMN memory_total_kb INTEGER;", "total memory")) return false;
+    if (!addMemoryColumn(hasMemoryCheckedColumn, "ALTER TABLE targets ADD COLUMN memory_checked_at TEXT;", "memory check timestamp")) return false;
 
     if (sqlite3_exec(db, "UPDATE targets SET name = 'VM_' || id WHERE name IS NULL OR name = '';", nullptr, nullptr, nullptr) != SQLITE_OK) {
         std::cerr << "Failed to assign default target names: " << sqlite3_errmsg(db) << std::endl;
@@ -174,7 +195,7 @@ std::vector<RemoteTarget> Database::listTargets() const {
         return targets;
     }
 
-    const char* sql = "SELECT id, name, ip, username, port, services, last_status, last_checked_at FROM targets ORDER BY id;";
+    const char* sql = "SELECT id, name, ip, username, port, services, last_status, last_checked_at, memory_used_kb, memory_total_kb, memory_checked_at FROM targets ORDER BY id;";
     sqlite3_stmt* stmt = nullptr;
     if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
         std::cerr << "Unable to list targets: " << sqlite3_errmsg(db) << std::endl;
@@ -196,6 +217,15 @@ std::vector<RemoteTarget> Database::listTargets() const {
         const unsigned char* checked = sqlite3_column_text(stmt, 7);
         if (checked) {
             target.lastCheckedAt = reinterpret_cast<const char*>(checked);
+        }
+        if (sqlite3_column_type(stmt, 8) != SQLITE_NULL && sqlite3_column_type(stmt, 9) != SQLITE_NULL) {
+            target.memory.available = true;
+            target.memory.usedKb = sqlite3_column_int64(stmt, 8);
+            target.memory.totalKb = sqlite3_column_int64(stmt, 9);
+        }
+        const unsigned char* memoryChecked = sqlite3_column_text(stmt, 10);
+        if (memoryChecked) {
+            target.memory.checkedAt = reinterpret_cast<const char*>(memoryChecked);
         }
         targets.push_back(target);
     }
@@ -320,6 +350,33 @@ bool Database::deleteTarget(int id) {
     return ok;
 }
 
+bool Database::updateTargetMemory(int id, const MemoryUsage& memory) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto* db = reinterpret_cast<sqlite3*>(db_);
+    if (db == nullptr) return false;
+
+    sqlite3_stmt* stmt = nullptr;
+    const char* sql = "UPDATE targets SET memory_used_kb = ?, memory_total_kb = ?, memory_checked_at = ? WHERE id = ?;";
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+        std::cerr << "Unable to prepare memory update: " << sqlite3_errmsg(db) << std::endl;
+        return false;
+    }
+
+    if (memory.available) {
+        sqlite3_bind_int64(stmt, 1, memory.usedKb);
+        sqlite3_bind_int64(stmt, 2, memory.totalKb);
+    } else {
+        sqlite3_bind_null(stmt, 1);
+        sqlite3_bind_null(stmt, 2);
+    }
+    sqlite3_bind_text(stmt, 3, memory.checkedAt.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(stmt, 4, id);
+    const bool ok = sqlite3_step(stmt) == SQLITE_DONE && sqlite3_changes(db) == 1;
+    if (!ok) std::cerr << "Unable to update target memory: " << sqlite3_errmsg(db) << std::endl;
+    sqlite3_finalize(stmt);
+    return ok;
+}
+
 bool Database::saveCheckResult(const ServiceCheckResult& result) {
     return saveCheckResults({result});
 }
@@ -429,4 +486,3 @@ std::vector<ServiceCheckResult> Database::getLatestChecks() const {
     sqlite3_finalize(stmt);
     return results;
 }
-
