@@ -875,7 +875,35 @@ void handleRequest(int clientFd, Database& db, SshCredentials& credentials, Moni
 
             const std::string sudoPassword = credentials.sudoPasswordFor(targetId);
             std::string remoteCommand;
-            if (action == "restart-service" || action == "stop-service") {
+            if (action == "restart-all-services" || action == "stop-all-services") {
+                std::istringstream configuredServices(found->services);
+                std::string serviceName;
+                std::vector<std::string> serviceArguments;
+                while (std::getline(configuredServices, serviceName, ',')) {
+                    const auto start = serviceName.find_first_not_of(" \t");
+                    const auto end = serviceName.find_last_not_of(" \t");
+                    if (start == std::string::npos) continue;
+                    serviceName = serviceName.substr(start, end - start + 1);
+                    if (!targetHasService(*found, serviceName)) {
+                        sendResponse(clientFd, "400 Bad Request", "application/json; charset=utf-8", "{\"status\":\"invalid_configured_service\"}");
+                        close(clientFd);
+                        return;
+                    }
+                    serviceArguments.push_back(shellQuote(serviceName));
+                }
+                if (serviceArguments.empty()) {
+                    sendResponse(clientFd, "400 Bad Request", "application/json; charset=utf-8", "{\"status\":\"no_services_configured\"}");
+                    close(clientFd);
+                    return;
+                }
+                const std::string operation = action == "restart-all-services" ? "restart" : "stop";
+                remoteCommand = std::string(sudoPassword.empty() ? "sudo -n -- systemctl " : "sudo -S -p '' -- systemctl ") +
+                                operation + " --no-block ";
+                for (size_t index = 0; index < serviceArguments.size(); ++index) {
+                    if (index > 0) remoteCommand += " ";
+                    remoteCommand += serviceArguments[index];
+                }
+            } else if (action == "restart-service" || action == "stop-service") {
                 if (!targetHasService(*found, service)) {
                     sendResponse(clientFd, "400 Bad Request", "application/json; charset=utf-8", "{\"status\":\"service_not_configured\"}");
                     close(clientFd);
@@ -901,7 +929,8 @@ void handleRequest(int clientFd, Database& db, SshCredentials& credentials, Moni
             std::string output;
             const int exitCode = runRemoteAction(target, remoteCommand, password, sudoPassword, output);
             const bool ok = exitCode == 0;
-            if (ok && (action == "restart-service" || action == "stop-service")) monitorSignal.notify();
+            if (ok && (action == "restart-service" || action == "stop-service" ||
+                       action == "restart-all-services" || action == "stop-all-services")) monitorSignal.notify();
             std::ostringstream response;
             response << "{\"status\":\"" << (ok ? "completed" : (exitCode == 124 ? "timeout" : "failed"))
                      << "\",\"exit_code\":" << exitCode << ",\"output\":\"" << jsonEscape(output) << "\"}";

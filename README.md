@@ -11,6 +11,8 @@ Install the RPM on a single Red Hat 9 / AlmaLinux machine, launch the binary fro
 - local web dashboard served on localhost
 - SSH-based checks against remote Linux VMs
 - per-machine memory usage monitoring with a live usage bar in the dashboard
+- restarting all monitored services on a machine without rebooting the machine
+- stopping all monitored services on a machine without shutting it down
 - named machines with editable connection details and removal
 - optional SSH password prompt after key authentication fails
 - monitoring of service names such as sshd, nginx, httpd, postgresql, etc.

@@ -100,6 +100,8 @@ function renderMachines(targets, checks) {
           </div>
           <div class="target-actions">
             <button type="button" class="button-secondary button-small" data-action="terminal" data-target-id="${target.id}">Terminal</button>
+            <button type="button" class="button-secondary button-small" data-action="restart-all-services" data-target-id="${target.id}" ${configuredServices.length ? '' : 'disabled'}>Restart all services</button>
+            <button type="button" class="button-danger button-small" data-action="stop-all-services" data-target-id="${target.id}" ${configuredServices.length ? '' : 'disabled'}>Stop all services</button>
             <button type="button" class="button-secondary button-small" data-action="reboot" data-target-id="${target.id}">Reboot</button>
             <button type="button" class="button-danger button-small" data-action="poweroff" data-target-id="${target.id}">Shutdown</button>
           </div>
@@ -432,6 +434,8 @@ function confirmRemoteAction(target, action, service = '') {
   pendingRemoteAction = { target, action, service };
   const actionNames = {
     'stop-service': `Stop ${service} on ${target.name}`,
+    'restart-all-services': `Restart all monitored services on ${target.name} (the machine will not reboot)`,
+    'stop-all-services': `Stop all monitored services on ${target.name} (the machine will remain on)`,
     reboot: `Reboot ${target.name}`,
     poweroff: `Shut down the entire machine ${target.name}`
   };
@@ -499,7 +503,7 @@ document.getElementById('machines-list')?.addEventListener('click', async (event
     return;
   }
 
-  if (['stop-service', 'reboot', 'poweroff'].includes(button.dataset.action)) {
+  if (['stop-service', 'restart-all-services', 'stop-all-services', 'reboot', 'poweroff'].includes(button.dataset.action)) {
     confirmRemoteAction(target, button.dataset.action, button.dataset.service || '');
     return;
   }
